@@ -126,12 +126,9 @@ class Recorder:
             self.process = None
             self.recording = False
 
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=2)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
+            await asyncio.sleep(2)
+            proc.kill()
+            await proc.wait()
             if self._read_task:
                 await self._read_task
                 self._read_task = None
