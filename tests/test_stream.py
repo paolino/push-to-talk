@@ -378,3 +378,4 @@ class TestStreamRecorderLifecycle:
 
         rec._type_text.assert_not_called()
         rec._press_key.assert_not_called()
+
