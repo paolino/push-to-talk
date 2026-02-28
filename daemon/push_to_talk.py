@@ -435,15 +435,15 @@ class StreamRecorder(BaseRecorder):
             log.info("Streaming stopped")
 
 
-async def monitor_keyboard(
+async def monitor_device(
     device: evdev.InputDevice,
-    key_code: int,
+    key_codes: set[int],
     recorder: BaseRecorder,
 ) -> None:
-    """Monitor an input device for the PTT key/button (passive, no grab)."""
+    """Monitor an input device for PTT keys/buttons (passive, no grab)."""
     try:
         async for event in device.async_read_loop():
-            if event.type == ecodes.EV_KEY and event.code == key_code:
+            if event.type == ecodes.EV_KEY and event.code in key_codes:
                 if event.value == 1:  # key down
                     await recorder.start()
                 elif event.value == 0:  # key up
@@ -457,15 +457,26 @@ async def run(args: argparse.Namespace) -> None:
     model = model_path(args.model)
     log.info("Using model: %s", model)
 
-    key_code = ecodes.ecodes.get(args.key)
-    if key_code is None:
-        log.error("Unknown key: %s", args.key)
-        sys.exit(1)
-    log.info("Push-to-talk key: %s (code %d)", args.key, key_code)
+    key_codes = set()
+    for key_name in args.key:
+        code = ecodes.ecodes.get(key_name)
+        if code is None:
+            log.error("Unknown key: %s", key_name)
+            sys.exit(1)
+        key_codes.add(code)
+        log.info("Push-to-talk key: %s (code %d)", key_name, code)
 
-    devices = find_devices(key_code)
+    # Collect unique devices that support any of the requested keys
+    seen_paths = set()
+    devices = []
+    for code in key_codes:
+        for dev in find_devices(code):
+            if dev.path not in seen_paths:
+                seen_paths.add(dev.path)
+                devices.append(dev)
+
     if not devices:
-        log.error("No input devices with %s found. Is user in 'input' group?", args.key)
+        log.error("No input devices found for %s. Is user in 'input' group?", args.key)
         sys.exit(1)
 
     if args.mode == "stream":
@@ -480,10 +491,11 @@ async def run(args: argparse.Namespace) -> None:
     else:
         recorder = Recorder(model, args.display_server)
 
-    notify("Push-to-Talk", f"Ready ({args.mode}). Hold {args.key} to dictate.")
+    key_names = ", ".join(args.key)
+    notify("Push-to-Talk", f"Ready ({args.mode}). Hold {key_names} to dictate.")
 
     tasks = [
-        asyncio.create_task(monitor_keyboard(dev, key_code, recorder))
+        asyncio.create_task(monitor_device(dev, key_codes, recorder))
         for dev in devices
     ]
     await asyncio.gather(*tasks)
@@ -494,8 +506,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Push-to-talk dictation daemon")
     parser.add_argument(
         "--key",
-        default="KEY_F12",
-        help="evdev key/button name for push-to-talk, e.g. KEY_F12, BTN_SIDE (default: KEY_F12)",
+        nargs="+",
+        default=["KEY_F12"],
+        help="evdev key/button names for push-to-talk, e.g. KEY_F12 BTN_SIDE (default: KEY_F12)",
     )
     parser.add_argument(
         "--model",

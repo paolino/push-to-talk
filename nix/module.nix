@@ -16,9 +16,10 @@ in
     };
 
     key = lib.mkOption {
-      type = lib.types.str;
-      default = "KEY_F12";
-      description = "evdev key/button name for push-to-talk trigger (e.g. KEY_F12, BTN_SIDE).";
+      type = with lib.types; either str (listOf str);
+      default = [ "KEY_F12" ];
+      description = "evdev key/button name(s) for push-to-talk trigger (e.g. KEY_F12, BTN_SIDE).";
+      apply = v: if builtins.isList v then v else [ v ];
     };
 
     whisperModel = lib.mkOption {
@@ -89,7 +90,7 @@ in
         ExecStart = lib.concatStringsSep " " (
           [
             "${cfg.package}/bin/push-to-talk"
-            "--key ${cfg.key}"
+            "--key ${lib.concatStringsSep " " cfg.key}"
             "--model ${cfg.whisperModel}"
             "--display-server ${cfg.displayServer}"
             "--mode ${cfg.mode}"
