@@ -30,3 +30,7 @@ test:
 
 # CI checks
 ci: build test
+
+# Restart the systemd user service
+restart:
+    systemctl --user restart push-to-talk
