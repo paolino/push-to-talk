@@ -260,8 +260,10 @@ class TestStreamRecorderLifecycle:
 
         await rec.stop_and_transcribe()
 
-        rec._type_text.assert_called_once_with(" world")
-        rec._press_key.assert_called_once_with("Return")
+        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
+        assert " world" in type_calls
+        assert " " in type_calls
+        rec._press_key.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stop_nothing_to_flush(self):
@@ -287,8 +289,8 @@ class TestStreamRecorderLifecycle:
 
         await rec.stop_and_transcribe()
 
-        rec._type_text.assert_not_called()
-        rec._press_key.assert_called_once_with("Return")
+        rec._type_text.assert_called_once_with(" ")
+        rec._press_key.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stop_when_not_streaming_is_noop(self):

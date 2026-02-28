@@ -236,8 +236,7 @@ class Recorder(BaseRecorder):
                 return
 
             log.info("Transcribed: %s", text)
-            await self._type_text(text)
-            await self._press_key("Return")
+            await self._type_text(text + " ")
             notify("Push-to-Talk", f"Typed: {text[:80]}")
 
         finally:
@@ -427,11 +426,11 @@ class StreamRecorder(BaseRecorder):
                 if remaining:
                     log.info("Flushing: %s", remaining)
                     await self._type_text(remaining)
+            await self._type_text(" ")
             self._in_progress = ""
             self._stable_typed = ""
             self._prev_texts = []
 
-            await self._press_key("Return")
             log.info("Streaming stopped")
 
 
