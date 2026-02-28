@@ -18,7 +18,7 @@ in
     key = lib.mkOption {
       type = lib.types.str;
       default = "KEY_F12";
-      description = "evdev key name for push-to-talk trigger.";
+      description = "evdev key/button name for push-to-talk trigger (e.g. KEY_F12, BTN_SIDE).";
     };
 
     whisperModel = lib.mkOption {
