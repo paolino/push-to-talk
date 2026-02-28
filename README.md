@@ -130,12 +130,54 @@ Models are downloaded automatically on first use to `~/.local/share/whisper/`. A
 
 For batch mode, `base.en` offers the best speed/quality tradeoff. For stream mode with a Vulkan GPU, `small.en` works well.
 
+## Non-NixOS installation (untested)
+
+This project is only tested on NixOS. The instructions below are provided as guidance but may require adjustments.
+
+### Dependencies
+
+- Python 3.11+
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — `whisper-cli` (batch mode) and `whisper-stream` (stream mode) must be on `PATH`
+- [python-evdev](https://python-evdev.readthedocs.io/) — `pip install evdev`
+- `wtype` (Wayland) or `xdotool` (X11) for typing output
+- `parecord` (from PulseAudio/PipeWire) for audio capture in batch mode
+- Stream mode: SDL2 with audio capture support, Vulkan GPU drivers
+
+### Setup
+
+```bash
+git clone https://github.com/paolino/push-to-talk.git
+cd push-to-talk
+
+# Install Python dependency
+pip install evdev
+
+# Add user to input group for evdev access
+sudo usermod -aG input $USER
+# Log out and back in for group change to take effect
+
+# Download a whisper model
+mkdir -p ~/.local/share/whisper
+curl -L -o ~/.local/share/whisper/ggml-base.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+
+# Run
+python3 daemon/push_to_talk.py --key KEY_F12 --verbose
+```
+
+For stream mode, set the `SDL_AUDIODRIVER` environment variable if audio capture fails:
+
+```bash
+export SDL_AUDIODRIVER=pipewire,pulseaudio,alsa
+python3 daemon/push_to_talk.py --key KEY_F12 --mode stream --verbose
+```
+
 ## Requirements
 
 - Linux with PulseAudio or PipeWire (with PulseAudio compatibility)
 - Wayland (`wtype`) or X11 (`xdotool`) for typing output
 - User in `input` group for evdev access
-- Stream mode: Vulkan-capable GPU and SDL2 audio support (provided via Nix wrapper)
+- Stream mode: Vulkan-capable GPU and SDL2 audio support (provided via Nix wrapper on NixOS)
 
 ## License
 
