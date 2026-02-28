@@ -179,6 +179,20 @@ python3 daemon/push_to_talk.py --key KEY_F12 --mode stream --verbose
 - User in `input` group for evdev access
 - Stream mode: Vulkan-capable GPU and SDL2 audio support (provided via Nix wrapper on NixOS)
 
+## Alternatives
+
+| Project | Streaming | NixOS module | Input method | Typing method |
+|---------|-----------|--------------|--------------|---------------|
+| **push-to-talk** (this) | Yes (stability filter) | Yes | evdev (multi-key) | wtype/xdotool |
+| [whisper-dictation](https://github.com/jacopone/whisper-dictation) | No | Yes | evdev | ydotool |
+| [turbo-whisper](https://github.com/knowall-ai/turbo-whisper) | No | No | Global hotkey | Auto-type |
+| [BlahST](https://github.com/QuantiusBenignus/BlahST) | Yes (clipboard-based) | No | Hotkey | Clipboard paste |
+| [voice_typing](https://github.com/themanyone/voice_typing) | No | No | sox silence detection | xdotool |
+| [Voxtype](https://voxtype.io/) | No | No | Compositor binding | Clipboard |
+| [TalkType](https://github.com/lmacan1/talktype) | No | No | Hotkey toggle | Terminal only |
+
+Key differences in this project: real-time streaming via `whisper-stream` with a stability filter to avoid flickering, Vulkan GPU acceleration out of the box, multiple simultaneous trigger keys, and composable dictation (no automatic Enter — build up text across segments).
+
 ## License
 
 MIT
