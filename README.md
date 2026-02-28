@@ -19,7 +19,7 @@ Records audio while the key is held, then transcribes the full recording on key-
 
 ### Stream mode
 
-Uses `whisper-stream` for real-time transcription — text appears as you speak. Uses SDL2 for audio capture with a sliding window approach. Lower latency but may produce intermediate corrections.
+Uses `whisper-stream` for real-time transcription — text appears as you speak. Uses SDL2 for audio capture with a sliding window approach. **Requires Vulkan GPU** — CPU is too slow for real-time inference. Vulkan is enabled by default in the Nix package.
 
 ```bash
 # Standalone stream mode
@@ -66,6 +66,7 @@ services.push-to-talk = {
   key = "KEY_F12";
   whisperModel = "base.en";
   mode = "stream";
+  # vulkanSupport = true;  # enabled by default, requires Vulkan GPU
   # streamStepMs = 500;    # optional tuning
   # streamLengthMs = 5000;
   # streamKeepMs = 200;
@@ -124,7 +125,7 @@ For real-time dictation, `base.en` offers the best speed/quality tradeoff.
 - Linux with PulseAudio or PipeWire (with PulseAudio compatibility)
 - Wayland (`wtype`) or X11 (`xdotool`) for typing output
 - User in `input` group for evdev access
-- Stream mode: SDL2 audio support (provided via Nix wrapper)
+- Stream mode: Vulkan-capable GPU and SDL2 audio support (provided via Nix wrapper)
 
 ## License
 
