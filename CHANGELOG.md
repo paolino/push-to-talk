@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/paolino/push-to-talk/compare/v1.1.0...v1.2.0) (2026-02-28)
+
+
+### Features
+
+* add --vad-thold and --no-fallback flags to stream mode ([d1ba271](https://github.com/paolino/push-to-talk/commit/d1ba27159c26913431cdb7cde3977bfb319d25e2))
+* add vadThreshold and noFallback options to reduce hallucinations ([2596276](https://github.com/paolino/push-to-talk/commit/25962768f41adc004b02e426a4221af61a5c3cb8))
+
 ## [1.1.0](https://github.com/paolino/push-to-talk/compare/v1.0.0...v1.1.0) (2026-02-28)
 
 
