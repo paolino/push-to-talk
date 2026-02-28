@@ -70,6 +70,18 @@ in
       description = "Stream mode: SDL audio capture device ID.";
     };
 
+    vadThreshold = lib.mkOption {
+      type = lib.types.nullOr lib.types.float;
+      default = null;
+      description = "Stream mode: voice activity detection threshold (default 0.60). Raise to reduce hallucinations on silence.";
+    };
+
+    noFallback = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Stream mode: do not use temperature fallback while decoding. Reduces hallucinations.";
+    };
+
     package = lib.mkOption {
       type = lib.types.package;
       default = package;
@@ -102,6 +114,12 @@ in
           ]
           ++ lib.optionals (cfg.captureDeviceId != null) [
             "--capture-id ${toString cfg.captureDeviceId}"
+          ]
+          ++ lib.optionals (cfg.vadThreshold != null) [
+            "--vad-thold ${toString cfg.vadThreshold}"
+          ]
+          ++ lib.optionals cfg.noFallback [
+            "--no-fallback"
           ]
         );
         Restart = "on-failure";
