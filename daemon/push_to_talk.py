@@ -200,32 +200,16 @@ async def monitor_keyboard(
     key_code: int,
     recorder: Recorder,
 ) -> None:
-    """Monitor a keyboard, grabbing it to swallow the PTT key.
-
-    All non-PTT events are forwarded via a virtual UInput device so
-    the rest of the system keeps working normally.
-    """
-    ui = evdev.UInput.from_device(device, name=f"ptt-forward-{device.name}")
+    """Monitor a keyboard for the PTT key (passive, no grab)."""
     try:
-        device.grab()
-        log.info("Grabbed device: %s", device.name)
         async for event in device.async_read_loop():
             if event.type == ecodes.EV_KEY and event.code == key_code:
                 if event.value == 1:  # key down
                     recorder.start()
                 elif event.value == 0:  # key up
                     await recorder.stop_and_transcribe()
-            else:
-                ui.write_event(event)
-                ui.syn()
     except OSError as e:
         log.warning("Lost device %s: %s", device.path, e)
-    finally:
-        try:
-            device.ungrab()
-        except OSError:
-            pass
-        ui.close()
 
 
 async def run(args: argparse.Namespace) -> None:
