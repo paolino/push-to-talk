@@ -31,6 +31,7 @@ python3.pkgs.buildPythonApplication {
   postFixup = ''
     wrapProgram $out/bin/push-to-talk \
       --set PYTHONPATH "${pythonEnv}/${pythonEnv.sitePackages}" \
+      --set SDL_AUDIODRIVER "pipewire,pulseaudio,alsa" \
       --prefix PATH : ${lib.makeBinPath [
         pythonEnv
         whisper-cpp

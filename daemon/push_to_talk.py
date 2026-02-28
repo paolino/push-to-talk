@@ -5,6 +5,8 @@ import argparse
 import asyncio
 import logging
 import os
+import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -25,6 +27,8 @@ MODEL_URLS = {
     "medium": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
     "large": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large.bin",
 }
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 def model_path(model_name: str) -> Path:
@@ -71,16 +75,67 @@ def find_keyboards() -> list[evdev.InputDevice]:
     return devices
 
 
-class Recorder:
-    """Manages the push-to-talk recording lifecycle.
+class BaseRecorder:
+    """Shared functionality for batch and stream recorders."""
+
+    def __init__(self, model: Path, display_server: str) -> None:
+        self.model = model
+        self.display_server = display_server
+
+    async def _press_key(self, key: str) -> None:
+        """Press a single key via wtype/xdotool."""
+        if self.display_server == "wayland" or (
+            self.display_server == "auto" and os.environ.get("WAYLAND_DISPLAY")
+        ):
+            cmd = ["wtype", "-k", key]
+        else:
+            cmd = ["xdotool", "key", key]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+
+    async def _type_text(self, text: str) -> None:
+        """Type text into the focused window."""
+        if self.display_server == "wayland":
+            cmd = ["wtype", "--", text]
+        elif self.display_server == "x11":
+            cmd = ["xdotool", "type", "--clearmodifiers", "--", text]
+        else:
+            if os.environ.get("WAYLAND_DISPLAY"):
+                cmd = ["wtype", "--", text]
+            else:
+                cmd = ["xdotool", "type", "--clearmodifiers", "--", text]
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            log.error("Typing failed: %s", stderr.decode())
+
+    async def start(self) -> None:
+        """Start recording or streaming."""
+        raise NotImplementedError
+
+    async def stop_and_transcribe(self) -> None:
+        """Stop and produce transcription."""
+        raise NotImplementedError
+
+
+class Recorder(BaseRecorder):
+    """Batch mode: record on key-down, transcribe on key-up.
 
     Starts parec on key-down, captures audio to memory via stdout,
     writes WAV on key-up. A short beep signals when recording is live.
     """
 
     def __init__(self, model: Path, display_server: str) -> None:
-        self.model = model
-        self.display_server = display_server
+        super().__init__(model, display_server)
         self.process: asyncio.subprocess.Process | None = None
         self.chunks: list[bytes] = []
         self.recording = False
@@ -188,47 +243,145 @@ class Recorder:
             except FileNotFoundError:
                 pass
 
-    async def _press_key(self, key: str) -> None:
-        """Press a single key via wtype/xdotool."""
-        if self.display_server == "wayland" or (
-            self.display_server == "auto" and os.environ.get("WAYLAND_DISPLAY")
-        ):
-            cmd = ["wtype", "-k", key]
-        else:
-            cmd = ["xdotool", "key", key]
-        proc = await asyncio.create_subprocess_exec(
+
+class StreamRecorder(BaseRecorder):
+    """Stream mode: real-time transcription using whisper-stream.
+
+    Launches whisper-stream on key-down which captures audio via SDL2
+    and outputs incremental transcription. Committed text blocks are
+    typed immediately; remaining in-progress text is typed on key-up.
+    """
+
+    def __init__(
+        self,
+        model: Path,
+        display_server: str,
+        step_ms: int,
+        length_ms: int,
+        keep_ms: int,
+        capture_id: int | None,
+    ) -> None:
+        super().__init__(model, display_server)
+        self.step_ms = step_ms
+        self.length_ms = length_ms
+        self.keep_ms = keep_ms
+        self.capture_id = capture_id
+        self.process: asyncio.subprocess.Process | None = None
+        self.streaming = False
+        self._parse_task: asyncio.Task | None = None
+        self._in_progress: str = ""
+        self._transcribe_lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        """Launch whisper-stream for real-time transcription."""
+        if self.streaming:
+            return
+
+        cmd = [
+            "whisper-stream",
+            "--step", str(self.step_ms),
+            "--length", str(self.length_ms),
+            "--keep", str(self.keep_ms),
+            "-kc",
+            "-m", str(self.model),
+        ]
+        if self.capture_id is not None:
+            cmd.extend(["--capture", str(self.capture_id)])
+
+        self.process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.communicate()
+        self.streaming = True
+        self._in_progress = ""
+        self._parse_task = asyncio.create_task(self._parse_output())
 
-    async def _type_text(self, text: str) -> None:
-        """Type text into the focused window."""
-        if self.display_server == "wayland":
-            cmd = ["wtype", "--", text]
-        elif self.display_server == "x11":
-            cmd = ["xdotool", "type", "--clearmodifiers", "--", text]
-        else:
-            if os.environ.get("WAYLAND_DISPLAY"):
-                cmd = ["wtype", "--", text]
-            else:
-                cmd = ["xdotool", "type", "--clearmodifiers", "--", text]
+        # Check for early death (SDL2 init failure)
+        await asyncio.sleep(0.3)
+        if self.process.returncode is not None:
+            stderr_data = await self.process.stderr.read()
+            log.error(
+                "whisper-stream died on startup: %s", stderr_data.decode()
+            )
+            notify("Push-to-Talk", "Stream mode failed (SDL2 error?)")
+            self.streaming = False
+            return
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            log.error("Typing failed: %s", stderr.decode())
+        log.info("Streaming started")
+        notify("Push-to-Talk", "Streaming...")
+
+    async def _parse_output(self) -> None:
+        """Read whisper-stream stdout, type committed text blocks.
+
+        whisper-stream uses ANSI ``\\033[2K\\r`` to overwrite the current
+        line (in-progress text) and ``\\n`` to commit finalized text.
+        We strip ANSI codes, type committed lines immediately, and save
+        the latest in-progress text for typing on key-up.
+        """
+        line_buf = ""
+        while self.streaming and self.process and self.process.stdout:
+            chunk = await self.process.stdout.read(1024)
+            if not chunk:
+                break
+            text = chunk.decode("utf-8", errors="replace")
+
+            for char in text:
+                if char == "\n":
+                    clean = ANSI_RE.sub("", line_buf).strip()
+                    line_buf = ""
+                    if not clean or clean in ("[Start speaking]", "[BLANK_AUDIO]"):
+                        continue
+                    log.info("Committed: %s", clean)
+                    await self._type_text(clean + " ")
+                    self._in_progress = ""
+                elif char == "\r":
+                    clean = ANSI_RE.sub("", line_buf).strip()
+                    line_buf = ""
+                    if clean and clean not in ("[Start speaking]", "[BLANK_AUDIO]"):
+                        self._in_progress = clean
+                else:
+                    line_buf += char
+
+        # Handle remaining buffer
+        if line_buf:
+            clean = ANSI_RE.sub("", line_buf).strip()
+            if clean and clean not in ("[Start speaking]", "[BLANK_AUDIO]"):
+                self._in_progress = clean
+
+    async def stop_and_transcribe(self) -> None:
+        """Stop whisper-stream, type remaining in-progress text."""
+        if not self.streaming or self.process is None:
+            return
+        async with self._transcribe_lock:
+            proc = self.process
+            self.process = None
+            self.streaming = False
+
+            proc.send_signal(signal.SIGTERM)
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+
+            if self._parse_task:
+                await self._parse_task
+                self._parse_task = None
+
+            if self._in_progress:
+                log.info("Remaining: %s", self._in_progress)
+                await self._type_text(self._in_progress)
+                self._in_progress = ""
+
+            await self._press_key("Return")
+            log.info("Streaming stopped")
 
 
 async def monitor_keyboard(
     device: evdev.InputDevice,
     key_code: int,
-    recorder: Recorder,
+    recorder: BaseRecorder,
 ) -> None:
     """Monitor a keyboard for the PTT key (passive, no grab)."""
     try:
@@ -258,8 +411,19 @@ async def run(args: argparse.Namespace) -> None:
         log.error("No keyboard devices found. Is user in 'input' group?")
         sys.exit(1)
 
-    recorder = Recorder(model, args.display_server)
-    notify("Push-to-Talk", f"Ready. Hold {args.key} to dictate.")
+    if args.mode == "stream":
+        recorder = StreamRecorder(
+            model,
+            args.display_server,
+            args.step_ms,
+            args.length_ms,
+            args.keep_ms,
+            args.capture_id,
+        )
+    else:
+        recorder = Recorder(model, args.display_server)
+
+    notify("Push-to-Talk", f"Ready ({args.mode}). Hold {args.key} to dictate.")
 
     tasks = [
         asyncio.create_task(monitor_keyboard(dev, key_code, recorder))
@@ -286,6 +450,36 @@ def main() -> None:
         default="auto",
         choices=["auto", "wayland", "x11"],
         help="Display server for typing (default: auto-detect)",
+    )
+    parser.add_argument(
+        "--mode",
+        default="batch",
+        choices=["batch", "stream"],
+        help="Transcription mode (default: batch)",
+    )
+    parser.add_argument(
+        "--step-ms",
+        type=int,
+        default=500,
+        help="Stream mode: audio step size in ms (default: 500)",
+    )
+    parser.add_argument(
+        "--length-ms",
+        type=int,
+        default=5000,
+        help="Stream mode: audio buffer length in ms (default: 5000)",
+    )
+    parser.add_argument(
+        "--keep-ms",
+        type=int,
+        default=200,
+        help="Stream mode: audio to keep from previous step in ms (default: 200)",
+    )
+    parser.add_argument(
+        "--capture-id",
+        type=int,
+        default=None,
+        help="Stream mode: SDL audio capture device ID",
     )
     parser.add_argument(
         "--verbose",

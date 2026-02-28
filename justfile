@@ -20,5 +20,13 @@ test-build:
 dev:
     nix develop
 
+# Smoke test: speak into mic, see streaming output
+smoke model="base.en":
+    python3 tests/smoke_stream.py --model {{ model }}
+
+# Run tests
+test:
+    pytest tests/ -v
+
 # CI checks
-ci: build
+ci: build test
