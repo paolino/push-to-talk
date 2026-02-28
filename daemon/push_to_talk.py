@@ -110,7 +110,7 @@ class Recorder:
             self.wav_file = None
             self.recording = False
 
-            proc.send_signal(signal.SIGINT)
+            proc.send_signal(signal.SIGTERM)
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
