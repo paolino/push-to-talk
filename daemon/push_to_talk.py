@@ -78,67 +78,50 @@ class Recorder:
         self.model = model
         self.display_server = display_server
         self.process: subprocess.Popen | None = None
-        self.raw_file: str | None = None
+        self.wav_file: str | None = None
         self.recording = False
         self._transcribe_lock = asyncio.Lock()
 
     def start(self) -> None:
-        """Start recording raw PCM audio via parecord."""
+        """Start recording WAV audio via sox rec."""
         if self.recording:
             return
-        fd, self.raw_file = tempfile.mkstemp(suffix=".raw", prefix="ptt-")
+        fd, self.wav_file = tempfile.mkstemp(suffix=".wav", prefix="ptt-")
         os.close(fd)
-        log.info("Recording to %s", self.raw_file)
+        log.info("Recording to %s", self.wav_file)
         self.process = subprocess.Popen(
             [
-                "parecord",
-                "--format=s16le",
-                "--rate=16000",
-                "--channels=1",
-                "--raw",
-                self.raw_file,
+                "rec",
+                "-r", "16000", "-c", "1", "-b", "16",
+                self.wav_file,
             ],
         )
         self.recording = True
         notify("Push-to-Talk", "Recording...")
 
     async def stop_and_transcribe(self) -> None:
-        """Stop recording, convert, transcribe, and type the result."""
+        """Stop recording, transcribe, and type the result."""
         if not self.recording or self.process is None:
             return
         async with self._transcribe_lock:
             proc = self.process
-            raw = self.raw_file
+            wav = self.wav_file
             self.process = None
-            self.raw_file = None
+            self.wav_file = None
             self.recording = False
 
-            proc.send_signal(signal.SIGTERM)
+            proc.send_signal(signal.SIGINT)
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
 
-            await self._transcribe_and_type(raw)
+            await self._transcribe_and_type(wav)
 
-    async def _transcribe_and_type(self, raw_file: str) -> None:
-        """Convert raw PCM to wav, run whisper, and type the result."""
-        wav_file = raw_file.replace(".raw", ".wav")
+    async def _transcribe_and_type(self, wav_file: str) -> None:
+        """Run whisper on the WAV file and type the result."""
         try:
-            result = await asyncio.create_subprocess_exec(
-                "sox",
-                "-r", "16000", "-c", "1", "-b", "16", "-e", "signed", "-t", "raw",
-                raw_file, wav_file,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await result.wait()
-            if result.returncode != 0:
-                log.error("sox conversion failed")
-                notify("Push-to-Talk", "Audio conversion failed")
-                return
-
             notify("Push-to-Talk", "Transcribing...")
             result = await asyncio.create_subprocess_exec(
                 "whisper-cli",
@@ -162,16 +145,15 @@ class Recorder:
                 notify("Push-to-Talk", "No speech detected")
                 return
 
-            log.info("Transcribed: %s", text[:80])
+            log.info("Transcribed: %s", text)
             await self._type_text(text)
             notify("Push-to-Talk", f"Typed: {text[:80]}")
 
         finally:
-            for f in (raw_file, wav_file):
-                try:
-                    os.unlink(f)
-                except FileNotFoundError:
-                    pass
+            try:
+                os.unlink(wav_file)
+            except FileNotFoundError:
+                pass
 
     async def _type_text(self, text: str) -> None:
         """Type text into the focused window."""

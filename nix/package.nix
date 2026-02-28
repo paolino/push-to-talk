@@ -7,7 +7,6 @@
   wtype,
   xdotool,
   libnotify,
-  pulseaudio,
   curl,
 }:
 let
@@ -38,7 +37,6 @@ python3.pkgs.buildPythonApplication {
         wtype
         xdotool
         libnotify
-        pulseaudio
         curl
       ]}
   '';
