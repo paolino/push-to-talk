@@ -125,7 +125,7 @@ class Recorder:
             self.process = None
             self.recording = False
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
             proc.kill()
             await proc.wait()
             if self._read_task:
