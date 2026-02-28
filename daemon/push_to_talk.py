@@ -187,8 +187,10 @@ async def monitor_keyboard(
         async for event in device.async_read_loop():
             if event.type == ecodes.EV_KEY and event.code == key_code:
                 if event.value == 1:  # key down
+                    log.info("KEY DOWN on %s", device.name)
                     recorder.start()
                 elif event.value == 0:  # key up
+                    log.info("KEY UP on %s", device.name)
                     await recorder.stop_and_transcribe()
     except OSError as e:
         log.warning("Lost device %s: %s", device.path, e)
