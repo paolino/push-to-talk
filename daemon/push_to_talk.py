@@ -66,17 +66,15 @@ def notify(title: str, body: str) -> None:
         pass
 
 
-def find_keyboards() -> list[evdev.InputDevice]:
-    """Find all keyboard input devices."""
+def find_devices(key_code: int) -> list[evdev.InputDevice]:
+    """Find all input devices that support the given key/button code."""
     devices = []
     for path in evdev.list_devices():
         dev = evdev.InputDevice(path)
         caps = dev.capabilities(verbose=False)
-        if ecodes.EV_KEY in caps:
-            key_caps = caps[ecodes.EV_KEY]
-            if ecodes.KEY_A in key_caps and ecodes.KEY_Z in key_caps:
-                devices.append(dev)
-                log.info("Found keyboard: %s (%s)", dev.name, dev.path)
+        if ecodes.EV_KEY in caps and key_code in caps[ecodes.EV_KEY]:
+            devices.append(dev)
+            log.info("Found device: %s (%s)", dev.name, dev.path)
     return devices
 
 
@@ -442,7 +440,7 @@ async def monitor_keyboard(
     key_code: int,
     recorder: BaseRecorder,
 ) -> None:
-    """Monitor a keyboard for the PTT key (passive, no grab)."""
+    """Monitor an input device for the PTT key/button (passive, no grab)."""
     try:
         async for event in device.async_read_loop():
             if event.type == ecodes.EV_KEY and event.code == key_code:
@@ -465,9 +463,9 @@ async def run(args: argparse.Namespace) -> None:
         sys.exit(1)
     log.info("Push-to-talk key: %s (code %d)", args.key, key_code)
 
-    keyboards = find_keyboards()
-    if not keyboards:
-        log.error("No keyboard devices found. Is user in 'input' group?")
+    devices = find_devices(key_code)
+    if not devices:
+        log.error("No input devices with %s found. Is user in 'input' group?", args.key)
         sys.exit(1)
 
     if args.mode == "stream":
@@ -486,7 +484,7 @@ async def run(args: argparse.Namespace) -> None:
 
     tasks = [
         asyncio.create_task(monitor_keyboard(dev, key_code, recorder))
-        for dev in keyboards
+        for dev in devices
     ]
     await asyncio.gather(*tasks)
 
@@ -497,7 +495,7 @@ def main() -> None:
     parser.add_argument(
         "--key",
         default="KEY_F12",
-        help="evdev key name for push-to-talk (default: KEY_F12)",
+        help="evdev key/button name for push-to-talk, e.g. KEY_F12, BTN_SIDE (default: KEY_F12)",
     )
     parser.add_argument(
         "--model",
