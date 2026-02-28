@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.1.0](https://github.com/paolino/push-to-talk/compare/v1.0.0...v1.1.0) (2026-02-28)
+
+
+### Features
+
+* add real-time streaming transcription with Vulkan GPU support ([3a70c81](https://github.com/paolino/push-to-talk/commit/3a70c818307a363dd3c79462fba9eff4d18fa6ad))
+* support mouse buttons as push-to-talk trigger ([3144f18](https://github.com/paolino/push-to-talk/commit/3144f182b30c5357f9f4779b149b722e64cb565a))
+* support multiple push-to-talk keys ([6d0305f](https://github.com/paolino/push-to-talk/commit/6d0305fd3ef5aa83347abd6d0442aa8ad2445229))
+
+
+### Bug Fixes
+
+* remove automatic Return, add trailing space for composing ([2c74b9d](https://github.com/paolino/push-to-talk/commit/2c74b9dac2f6dc2ab6df4d06d4a399de536f53ae))
+* replace backspace approach with stability filter for streaming ([44bcf1e](https://github.com/paolino/push-to-talk/commit/44bcf1ea006cc43bd42b7c10e507dac6029abcd3))
+* type in-progress text immediately with backspace correction ([f75eeb9](https://github.com/paolino/push-to-talk/commit/f75eeb9a4ea5f9a67a01cb19068182a0c3fdf7fa))
+* use diff-based typing to reduce flickering in stream mode ([73e23aa](https://github.com/paolino/push-to-talk/commit/73e23aafca161ed7bc62810a34873a40e5ea4711))
+
 ## 1.0.0 (2026-02-28)
 
 
