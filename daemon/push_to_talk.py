@@ -87,11 +87,10 @@ class Recorder:
         self._transcribe_lock = asyncio.Lock()
         self._read_task: asyncio.Task | None = None
 
-    async def _read_audio(self) -> None:
+    async def _read_audio(self, stdout: asyncio.StreamReader) -> None:
         """Read audio chunks from parec stdout into memory."""
-        assert self.process and self.process.stdout
         while True:
-            chunk = await self.process.stdout.read(4096)
+            chunk = await stdout.read(4096)
             if not chunk:
                 break
             self.chunks.append(chunk)
@@ -110,7 +109,7 @@ class Recorder:
             stderr=asyncio.subprocess.PIPE,
         )
         self.recording = True
-        self._read_task = asyncio.create_task(self._read_audio())
+        self._read_task = asyncio.create_task(self._read_audio(self.process.stdout))
         # Wait for first chunk to confirm parec is streaming
         while not self.chunks and self.recording:
             await asyncio.sleep(0.05)
