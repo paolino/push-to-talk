@@ -319,13 +319,28 @@ class StreamRecorder(BaseRecorder):
             await self._press_key("BackSpace")
 
     async def _replace_in_progress(self, new_text: str) -> None:
-        """Erase old in-progress text and type new in-progress text."""
-        if self._typed_len > 0:
-            await self._backspace(self._typed_len)
-            self._typed_len = 0
-        if new_text:
-            await self._type_text(new_text)
-            self._typed_len = len(new_text)
+        """Update in-progress text with minimal keystrokes.
+
+        Finds the common prefix between what's on screen and the new
+        text, backspaces only the differing suffix, and types the new
+        suffix. E.g. "hello wor" → "hello world" just types "ld".
+        """
+        old = self._in_progress
+        # Find common prefix length
+        common = 0
+        for a, b in zip(old, new_text):
+            if a != b:
+                break
+            common += 1
+        # Backspace only the old suffix that differs
+        to_delete = self._typed_len - common
+        if to_delete > 0:
+            await self._backspace(to_delete)
+        # Type only the new suffix
+        suffix = new_text[common:]
+        if suffix:
+            await self._type_text(suffix)
+        self._typed_len = len(new_text)
         self._in_progress = new_text
 
     async def _parse_output(self) -> None:
