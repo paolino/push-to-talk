@@ -83,7 +83,7 @@ class Recorder:
         self._transcribe_lock = asyncio.Lock()
 
     def start(self) -> None:
-        """Start recording WAV audio via sox rec."""
+        """Start recording WAV audio via parecord."""
         if self.recording:
             return
         fd, self.wav_file = tempfile.mkstemp(suffix=".wav", prefix="ptt-")
@@ -91,8 +91,11 @@ class Recorder:
         log.info("Recording to %s", self.wav_file)
         self.process = subprocess.Popen(
             [
-                "rec",
-                "-r", "16000", "-c", "1", "-b", "16",
+                "parecord",
+                "--format=s16le",
+                "--rate=16000",
+                "--channels=1",
+                "--file-format=wav",
                 self.wav_file,
             ],
         )

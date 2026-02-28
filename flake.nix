@@ -24,6 +24,7 @@
           pkgs.wtype
           pkgs.xdotool
           pkgs.libnotify
+          pkgs.pulseaudio
           pkgs.curl
           pkgs.just
         ];
