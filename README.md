@@ -11,6 +11,27 @@ Hold a key to record, release to transcribe and type. Local speech-to-text using
 
 Audio is captured via PulseAudio/PipeWire, transcribed locally by whisper.cpp, and injected via `wtype` (Wayland) or `xdotool` (X11).
 
+## Transcription modes
+
+### Batch mode (default)
+
+Records audio while the key is held, then transcribes the full recording on key-up. Best accuracy, but text only appears after you stop speaking.
+
+### Stream mode
+
+Uses `whisper-stream` for real-time transcription — text appears as you speak. Uses SDL2 for audio capture with a sliding window approach. Lower latency but may produce intermediate corrections.
+
+```bash
+# Standalone stream mode
+nix develop -c python3 daemon/push_to_talk.py --key KEY_F12 --mode stream --verbose
+```
+
+Stream mode parameters:
+- `--step-ms` — audio step size (default: 500ms)
+- `--length-ms` — audio buffer length (default: 5000ms)
+- `--keep-ms` — audio kept from previous step (default: 200ms)
+- `--capture-id` — SDL audio capture device ID (default: system default)
+
 ## NixOS module
 
 Add the flake input and enable the service:
@@ -27,13 +48,28 @@ inputs.push-to-talk.nixosModules.default
 ```
 
 ```nix
-# configuration.nix or a dedicated module
+# Batch mode (default)
 services.push-to-talk = {
   enable = true;
   user = "your-username";
-  key = "KEY_F12";           # evdev key name
-  whisperModel = "base.en";  # tiny.en, base.en, small.en, medium.en, large
-  displayServer = "auto";    # auto, wayland, x11
+  key = "KEY_F12";
+  whisperModel = "base.en";
+  displayServer = "auto";
+};
+```
+
+```nix
+# Stream mode — real-time transcription
+services.push-to-talk = {
+  enable = true;
+  user = "your-username";
+  key = "KEY_F12";
+  whisperModel = "base.en";
+  mode = "stream";
+  # streamStepMs = 500;    # optional tuning
+  # streamLengthMs = 5000;
+  # streamKeepMs = 200;
+  # captureDeviceId = 0;   # specific SDL capture device
 };
 ```
 
@@ -60,7 +96,11 @@ F13 is ignored by all applications, so nothing leaks.
 ## Standalone usage
 
 ```bash
+# Batch mode
 nix develop -c python3 daemon/push_to_talk.py --key KEY_F12 --verbose
+
+# Stream mode
+nix develop -c python3 daemon/push_to_talk.py --key KEY_F12 --mode stream --verbose
 ```
 
 Requires your user to be in the `input` group (`sudo usermod -aG input $USER`).
@@ -84,6 +124,7 @@ For real-time dictation, `base.en` offers the best speed/quality tradeoff.
 - Linux with PulseAudio or PipeWire (with PulseAudio compatibility)
 - Wayland (`wtype`) or X11 (`xdotool`) for typing output
 - User in `input` group for evdev access
+- Stream mode: SDL2 audio support (provided via Nix wrapper)
 
 ## License
 

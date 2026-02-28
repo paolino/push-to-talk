@@ -1,7 +1,10 @@
 { config, lib, pkgs, ... }:
 let
   cfg = config.services.push-to-talk;
-  package = pkgs.callPackage ./package.nix { };
+  whisper-cpp' = pkgs.whisper-cpp.override {
+    vulkanSupport = cfg.vulkanSupport;
+  };
+  package = pkgs.callPackage ./package.nix { whisper-cpp = whisper-cpp'; };
 in
 {
   options.services.push-to-talk = {
@@ -30,6 +33,42 @@ in
       description = "Display server for typing output.";
     };
 
+    mode = lib.mkOption {
+      type = lib.types.enum [ "batch" "stream" ];
+      default = "batch";
+      description = "Transcription mode. Batch records then transcribes; stream types in real-time.";
+    };
+
+    streamStepMs = lib.mkOption {
+      type = lib.types.int;
+      default = 500;
+      description = "Stream mode: audio step size in milliseconds.";
+    };
+
+    streamLengthMs = lib.mkOption {
+      type = lib.types.int;
+      default = 5000;
+      description = "Stream mode: audio buffer length in milliseconds.";
+    };
+
+    streamKeepMs = lib.mkOption {
+      type = lib.types.int;
+      default = 200;
+      description = "Stream mode: audio to keep from previous step in milliseconds.";
+    };
+
+    vulkanSupport = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Enable Vulkan GPU acceleration for whisper.cpp.";
+    };
+
+    captureDeviceId = lib.mkOption {
+      type = lib.types.nullOr lib.types.int;
+      default = null;
+      description = "Stream mode: SDL audio capture device ID.";
+    };
+
     package = lib.mkOption {
       type = lib.types.package;
       default = package;
@@ -47,12 +86,23 @@ in
       after = [ "graphical-session.target" "pulseaudio.service" "pipewire.service" ];
 
       serviceConfig = {
-        ExecStart = lib.concatStringsSep " " [
-          "${cfg.package}/bin/push-to-talk"
-          "--key ${cfg.key}"
-          "--model ${cfg.whisperModel}"
-          "--display-server ${cfg.displayServer}"
-        ];
+        ExecStart = lib.concatStringsSep " " (
+          [
+            "${cfg.package}/bin/push-to-talk"
+            "--key ${cfg.key}"
+            "--model ${cfg.whisperModel}"
+            "--display-server ${cfg.displayServer}"
+            "--mode ${cfg.mode}"
+          ]
+          ++ lib.optionals (cfg.mode == "stream") [
+            "--step-ms ${toString cfg.streamStepMs}"
+            "--length-ms ${toString cfg.streamLengthMs}"
+            "--keep-ms ${toString cfg.streamKeepMs}"
+          ]
+          ++ lib.optionals (cfg.captureDeviceId != null) [
+            "--capture-id ${toString cfg.captureDeviceId}"
+          ]
+        );
         Restart = "on-failure";
         RestartSec = 5;
       };
