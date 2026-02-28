@@ -178,7 +178,7 @@ class Recorder:
                 return
 
             log.info("Transcribed: %s", text)
-            await self._type_text(text)
+            await self._type_text(text + "\n")
             notify("Push-to-Talk", f"Typed: {text[:80]}")
 
         finally:
