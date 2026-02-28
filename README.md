@@ -1,0 +1,90 @@
+# push-to-talk
+
+Hold a key to record, release to transcribe and type. Local speech-to-text using [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — no cloud, no API keys, no data leaves your machine.
+
+## How it works
+
+1. Hold the push-to-talk key (default: F12)
+2. Speak
+3. Release the key
+4. Transcribed text is typed into the focused window
+
+Audio is captured via PulseAudio/PipeWire, transcribed locally by whisper.cpp, and injected via `wtype` (Wayland) or `xdotool` (X11).
+
+## NixOS module
+
+Add the flake input and enable the service:
+
+```nix
+# flake.nix
+inputs.push-to-talk = {
+  url = "github:paolino/push-to-talk";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+
+# In your modules list:
+inputs.push-to-talk.nixosModules.default
+```
+
+```nix
+# configuration.nix or a dedicated module
+services.push-to-talk = {
+  enable = true;
+  user = "your-username";
+  key = "KEY_F12";           # evdev key name
+  whisperModel = "base.en";  # tiny.en, base.en, small.en, medium.en, large
+  displayServer = "auto";    # auto, wayland, x11
+};
+```
+
+The module adds your user to the `input` group and creates a systemd user service that starts with the graphical session.
+
+### Key leaking
+
+The daemon reads keys passively via evdev — it does not grab the keyboard. The push-to-talk key will leak into the focused application. To prevent this, remap the key at the compositor or system level. For example, with [keyd](https://github.com/rvaiya/keyd):
+
+```nix
+services.keyd = {
+  enable = true;
+  keyboards.default = {
+    ids = [ "*" ];
+    settings.main.f12 = "f13";
+  };
+};
+
+services.push-to-talk.key = "KEY_F13";
+```
+
+F13 is ignored by all applications, so nothing leaks.
+
+## Standalone usage
+
+```bash
+nix develop -c python3 daemon/push_to_talk.py --key KEY_F12 --verbose
+```
+
+Requires your user to be in the `input` group (`sudo usermod -aG input $USER`).
+
+## Whisper models
+
+Models are downloaded automatically on first use to `~/.local/share/whisper/`. Available models:
+
+| Model | Size | Speed | Quality |
+|-------|------|-------|---------|
+| `tiny.en` | 75 MB | Fastest | Low |
+| `base.en` | 142 MB | Fast | Good |
+| `small.en` | 466 MB | Medium | Better |
+| `medium.en` | 1.5 GB | Slow | High |
+| `large` | 2.9 GB | Slowest | Highest |
+
+For real-time dictation, `base.en` offers the best speed/quality tradeoff.
+
+## Requirements
+
+- Linux with PulseAudio or PipeWire (with PulseAudio compatibility)
+- Wayland (`wtype`) or X11 (`xdotool`) for typing output
+- User in `input` group for evdev access
+
+## License
+
+MIT
