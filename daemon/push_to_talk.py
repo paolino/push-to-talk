@@ -178,7 +178,8 @@ class Recorder:
                 return
 
             log.info("Transcribed: %s", text)
-            await self._type_text(text + "\n")
+            await self._type_text(text)
+            await self._press_key("Return")
             notify("Push-to-Talk", f"Typed: {text[:80]}")
 
         finally:
@@ -186,6 +187,21 @@ class Recorder:
                 os.unlink(wav_file)
             except FileNotFoundError:
                 pass
+
+    async def _press_key(self, key: str) -> None:
+        """Press a single key via wtype/xdotool."""
+        if self.display_server == "wayland" or (
+            self.display_server == "auto" and os.environ.get("WAYLAND_DISPLAY")
+        ):
+            cmd = ["wtype", "-k", key]
+        else:
+            cmd = ["xdotool", "key", key]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
 
     async def _type_text(self, text: str) -> None:
         """Type text into the focused window."""
