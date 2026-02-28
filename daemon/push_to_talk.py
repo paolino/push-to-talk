@@ -74,9 +74,8 @@ def find_keyboards() -> list[evdev.InputDevice]:
 class Recorder:
     """Manages the push-to-talk recording lifecycle.
 
-    Keeps parec running continuously to avoid startup latency.
-    On key-down, starts collecting chunks. On key-up, stops
-    collecting and transcribes the buffered audio.
+    Starts parec on key-down, captures audio to memory via stdout,
+    writes WAV on key-up. A short beep signals when recording is live.
     """
 
     def __init__(self, model: Path, display_server: str) -> None:
@@ -88,10 +87,20 @@ class Recorder:
         self._transcribe_lock = asyncio.Lock()
         self._read_task: asyncio.Task | None = None
 
-    async def ensure_parec(self) -> None:
-        """Start parec if not already running."""
-        if self.process is not None:
+    async def _read_audio(self) -> None:
+        """Read audio chunks from parec stdout into memory."""
+        assert self.process and self.process.stdout
+        while True:
+            chunk = await self.process.stdout.read(4096)
+            if not chunk:
+                break
+            self.chunks.append(chunk)
+
+    async def start(self) -> None:
+        """Start parec and collect audio chunks."""
+        if self.recording:
             return
+        self.chunks = []
         self.process = await asyncio.create_subprocess_exec(
             "parec",
             "--format=s16le",
@@ -100,35 +109,28 @@ class Recorder:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        self._read_task = asyncio.create_task(self._read_audio())
-        log.info("parec started (always-on)")
-
-    async def _read_audio(self) -> None:
-        """Read audio chunks from parec, keep only while recording."""
-        assert self.process and self.process.stdout
-        while True:
-            chunk = await self.process.stdout.read(4096)
-            if not chunk:
-                break
-            if self.recording:
-                self.chunks.append(chunk)
-
-    async def start(self) -> None:
-        """Start collecting audio chunks."""
-        if self.recording:
-            return
-        await self.ensure_parec()
-        self.chunks = []
         self.recording = True
+        self._read_task = asyncio.create_task(self._read_audio())
+        # Wait for first chunk to confirm parec is streaming
+        while not self.chunks and self.recording:
+            await asyncio.sleep(0.05)
         log.info("Recording started")
         notify("Push-to-Talk", "Recording...")
 
     async def stop_and_transcribe(self) -> None:
-        """Stop collecting, write WAV from buffer, transcribe."""
-        if not self.recording:
+        """Stop parec, write WAV from buffer, transcribe."""
+        if not self.recording or self.process is None:
             return
         async with self._transcribe_lock:
+            proc = self.process
+            self.process = None
             self.recording = False
+
+            proc.kill()
+            await proc.wait()
+            if self._read_task:
+                await self._read_task
+                self._read_task = None
 
             pcm_data = b"".join(self.chunks)
             self.chunks = []
