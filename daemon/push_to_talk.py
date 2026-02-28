@@ -30,6 +30,11 @@ MODEL_URLS = {
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
+SKIP_MARKERS = ("[Start speaking]", "[BLANK_AUDIO]")
+
+# How many consecutive in-progress updates must agree before typing
+STABILITY_THRESHOLD = 3
+
 
 def model_path(model_name: str) -> Path:
     """Return path to the whisper model file, downloading if needed."""
@@ -270,7 +275,8 @@ class StreamRecorder(BaseRecorder):
         self.streaming = False
         self._parse_task: asyncio.Task | None = None
         self._in_progress: str = ""
-        self._typed_len: int = 0  # chars of in-progress text on screen
+        self._stable_typed: str = ""  # permanently typed, never backspaced
+        self._prev_texts: list[str] = []  # history for stability detection
         self._transcribe_lock = asyncio.Lock()
 
     async def start(self) -> None:
@@ -296,7 +302,8 @@ class StreamRecorder(BaseRecorder):
         )
         self.streaming = True
         self._in_progress = ""
-        self._typed_len = 0
+        self._stable_typed = ""
+        self._prev_texts = []
         self._parse_task = asyncio.create_task(self._parse_output())
 
         # Check for early death (SDL2 init failure)
@@ -313,47 +320,48 @@ class StreamRecorder(BaseRecorder):
         log.info("Streaming started")
         notify("Push-to-Talk", "Streaming...")
 
-    async def _backspace(self, n: int) -> None:
-        """Press Backspace n times to erase typed in-progress text."""
-        for _ in range(n):
-            await self._press_key("BackSpace")
+    def _update_stable(self, new_text: str) -> str | None:
+        """Track stability and return new text to type, if any.
 
-    async def _replace_in_progress(self, new_text: str) -> None:
-        """Update in-progress text with minimal keystrokes.
-
-        Finds the common prefix between what's on screen and the new
-        text, backspaces only the differing suffix, and types the new
-        suffix. E.g. "hello wor" → "hello world" just types "ld".
+        Only text that has been consistent across STABILITY_THRESHOLD
+        consecutive updates gets typed. Returns the suffix to append
+        to what's already on screen, or None if nothing new is stable.
         """
-        old = self._in_progress
-        # Find common prefix length
-        common = 0
-        for a, b in zip(old, new_text):
-            if a != b:
-                break
-            common += 1
-        # Backspace only the old suffix that differs
-        to_delete = self._typed_len - common
-        if to_delete > 0:
-            await self._backspace(to_delete)
-        # Type only the new suffix
-        suffix = new_text[common:]
-        if suffix:
-            await self._type_text(suffix)
-        self._typed_len = len(new_text)
+        self._prev_texts.append(new_text)
+        if len(self._prev_texts) > STABILITY_THRESHOLD:
+            self._prev_texts.pop(0)
         self._in_progress = new_text
 
+        if len(self._prev_texts) < STABILITY_THRESHOLD:
+            return None
+
+        # Find longest common prefix across all recent texts
+        stable = self._prev_texts[0]
+        for t in self._prev_texts[1:]:
+            i = 0
+            for a, b in zip(stable, t):
+                if a != b:
+                    break
+                i += 1
+            stable = stable[:i]
+
+        # Only type what extends beyond already-typed stable text
+        if len(stable) > len(self._stable_typed):
+            suffix = stable[len(self._stable_typed):]
+            self._stable_typed = stable
+            return suffix
+        return None
+
     async def _parse_output(self) -> None:
-        """Read whisper-stream stdout, type text as it arrives.
+        """Read whisper-stream stdout, type stable text incrementally.
 
         whisper-stream uses ANSI ``\\033[2K\\r`` to overwrite the current
         line (in-progress text) and ``\\n`` to commit finalized text.
 
-        In-progress text is typed immediately and backspaced when it
-        changes. Committed text replaces whatever in-progress text is
-        on screen (since committed text is the finalized version of
-        the in-progress text, we backspace the old and type the
-        committed version with a trailing space).
+        In-progress updates are tracked for stability: only text that
+        survives multiple consecutive updates is typed. This avoids
+        backspacing entirely — text only ever appends. On commit or
+        key-up, the remaining untyped text is flushed.
         """
         line_buf = ""
         while self.streaming and self.process and self.process.stdout:
@@ -366,27 +374,34 @@ class StreamRecorder(BaseRecorder):
                 if char == "\n":
                     clean = ANSI_RE.sub("", line_buf).strip()
                     line_buf = ""
-                    if not clean or clean in ("[Start speaking]", "[BLANK_AUDIO]"):
+                    if not clean or clean in SKIP_MARKERS:
                         continue
                     log.info("Committed: %s", clean)
-                    # Replace in-progress with committed text + space
-                    await self._replace_in_progress("")
-                    await self._type_text(clean + " ")
-                    self._typed_len = 0
+                    # Type whatever hasn't been typed yet
+                    remaining = clean[len(self._stable_typed):]
+                    if remaining:
+                        await self._type_text(remaining + " ")
+                    else:
+                        await self._type_text(" ")
+                    self._stable_typed = ""
+                    self._prev_texts = []
+                    self._in_progress = ""
                 elif char == "\r":
                     clean = ANSI_RE.sub("", line_buf).strip()
                     line_buf = ""
-                    if clean and clean not in ("[Start speaking]", "[BLANK_AUDIO]"):
-                        log.debug("In-progress: %s", clean)
-                        await self._replace_in_progress(clean)
+                    if clean and clean not in SKIP_MARKERS:
+                        suffix = self._update_stable(clean)
+                        if suffix:
+                            log.debug("Stable: +%s", suffix)
+                            await self._type_text(suffix)
                 else:
                     line_buf += char
 
         # Handle remaining buffer
         if line_buf:
             clean = ANSI_RE.sub("", line_buf).strip()
-            if clean and clean not in ("[Start speaking]", "[BLANK_AUDIO]"):
-                await self._replace_in_progress(clean)
+            if clean and clean not in SKIP_MARKERS:
+                self._update_stable(clean)
 
     async def stop_and_transcribe(self) -> None:
         """Stop whisper-stream, type remaining in-progress text."""
@@ -408,11 +423,15 @@ class StreamRecorder(BaseRecorder):
                 await self._parse_task
                 self._parse_task = None
 
-            # In-progress text is already on screen — just press Return
+            # Type whatever in-progress text hasn't been typed yet
             if self._in_progress:
-                log.info("Final in-progress: %s", self._in_progress)
+                remaining = self._in_progress[len(self._stable_typed):]
+                if remaining:
+                    log.info("Flushing: %s", remaining)
+                    await self._type_text(remaining)
             self._in_progress = ""
-            self._typed_len = 0
+            self._stable_typed = ""
+            self._prev_texts = []
 
             await self._press_key("Return")
             log.info("Streaming stopped")
