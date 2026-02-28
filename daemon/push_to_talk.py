@@ -5,10 +5,10 @@ import argparse
 import asyncio
 import logging
 import os
-import signal
 import subprocess
 import sys
 import tempfile
+import wave
 from pathlib import Path
 
 import evdev
@@ -77,50 +77,71 @@ class Recorder:
     def __init__(self, model: Path, display_server: str) -> None:
         self.model = model
         self.display_server = display_server
-        self.process: subprocess.Popen | None = None
-        self.wav_file: str | None = None
+        self.process: asyncio.subprocess.Process | None = None
+        self.chunks: list[bytes] = []
         self.recording = False
         self._transcribe_lock = asyncio.Lock()
+        self._read_task: asyncio.Task | None = None
 
-    def start(self) -> None:
-        """Start recording WAV audio via parecord."""
+    async def start(self) -> None:
+        """Start recording raw PCM via parec, capturing stdout."""
         if self.recording:
             return
-        fd, self.wav_file = tempfile.mkstemp(suffix=".wav", prefix="ptt-")
-        os.close(fd)
-        log.info("Recording to %s", self.wav_file)
-        self.process = subprocess.Popen(
-            [
-                "parecord",
-                "--format=s16le",
-                "--rate=16000",
-                "--channels=1",
-                "--file-format=wav",
-                self.wav_file,
-            ],
+        self.chunks = []
+        self.process = await asyncio.create_subprocess_exec(
+            "parec",
+            "--format=s16le",
+            "--rate=16000",
+            "--channels=1",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         self.recording = True
+        self._read_task = asyncio.create_task(self._read_audio())
+        log.info("Recording started")
         notify("Push-to-Talk", "Recording...")
 
+    async def _read_audio(self) -> None:
+        """Read audio chunks from parec stdout into memory."""
+        assert self.process and self.process.stdout
+        while True:
+            chunk = await self.process.stdout.read(4096)
+            if not chunk:
+                break
+            self.chunks.append(chunk)
+
     async def stop_and_transcribe(self) -> None:
-        """Stop recording, transcribe, and type the result."""
+        """Stop recording, write WAV from buffer, transcribe."""
         if not self.recording or self.process is None:
             return
         async with self._transcribe_lock:
             proc = self.process
-            wav = self.wav_file
             self.process = None
-            self.wav_file = None
             self.recording = False
 
-            proc.send_signal(signal.SIGTERM)
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+            proc.kill()
+            await proc.wait()
+            if self._read_task:
+                await self._read_task
+                self._read_task = None
 
-            await self._transcribe_and_type(wav)
+            pcm_data = b"".join(self.chunks)
+            self.chunks = []
+            log.info("Captured %d bytes of audio", len(pcm_data))
+
+            if len(pcm_data) < 3200:  # less than 0.1s
+                notify("Push-to-Talk", "Too short")
+                return
+
+            fd, wav_file = tempfile.mkstemp(suffix=".wav", prefix="ptt-")
+            os.close(fd)
+            with wave.open(wav_file, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(pcm_data)
+
+            await self._transcribe_and_type(wav_file)
 
     async def _transcribe_and_type(self, wav_file: str) -> None:
         """Run whisper on the WAV file and type the result."""
@@ -153,7 +174,10 @@ class Recorder:
             notify("Push-to-Talk", f"Typed: {text[:80]}")
 
         finally:
-            log.info("Keeping WAV for debug: %s", wav_file)
+            try:
+                os.unlink(wav_file)
+            except FileNotFoundError:
+                pass
 
     async def _type_text(self, text: str) -> None:
         """Type text into the focused window."""
@@ -188,7 +212,7 @@ async def monitor_keyboard(
             if event.type == ecodes.EV_KEY and event.code == key_code:
                 if event.value == 1:  # key down
                     log.info("KEY DOWN on %s", device.name)
-                    recorder.start()
+                    await recorder.start()
                 elif event.value == 0:  # key up
                     log.info("KEY UP on %s", device.name)
                     await recorder.stop_and_transcribe()
