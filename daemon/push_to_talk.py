@@ -270,6 +270,7 @@ class StreamRecorder(BaseRecorder):
         self.streaming = False
         self._parse_task: asyncio.Task | None = None
         self._in_progress: str = ""
+        self._typed_len: int = 0  # chars of in-progress text on screen
         self._transcribe_lock = asyncio.Lock()
 
     async def start(self) -> None:
@@ -295,6 +296,7 @@ class StreamRecorder(BaseRecorder):
         )
         self.streaming = True
         self._in_progress = ""
+        self._typed_len = 0
         self._parse_task = asyncio.create_task(self._parse_output())
 
         # Check for early death (SDL2 init failure)
@@ -311,13 +313,32 @@ class StreamRecorder(BaseRecorder):
         log.info("Streaming started")
         notify("Push-to-Talk", "Streaming...")
 
+    async def _backspace(self, n: int) -> None:
+        """Press Backspace n times to erase typed in-progress text."""
+        for _ in range(n):
+            await self._press_key("BackSpace")
+
+    async def _replace_in_progress(self, new_text: str) -> None:
+        """Erase old in-progress text and type new in-progress text."""
+        if self._typed_len > 0:
+            await self._backspace(self._typed_len)
+            self._typed_len = 0
+        if new_text:
+            await self._type_text(new_text)
+            self._typed_len = len(new_text)
+        self._in_progress = new_text
+
     async def _parse_output(self) -> None:
-        """Read whisper-stream stdout, type committed text blocks.
+        """Read whisper-stream stdout, type text as it arrives.
 
         whisper-stream uses ANSI ``\\033[2K\\r`` to overwrite the current
         line (in-progress text) and ``\\n`` to commit finalized text.
-        We strip ANSI codes, type committed lines immediately, and save
-        the latest in-progress text for typing on key-up.
+
+        In-progress text is typed immediately and backspaced when it
+        changes. Committed text replaces whatever in-progress text is
+        on screen (since committed text is the finalized version of
+        the in-progress text, we backspace the old and type the
+        committed version with a trailing space).
         """
         line_buf = ""
         while self.streaming and self.process and self.process.stdout:
@@ -333,13 +354,16 @@ class StreamRecorder(BaseRecorder):
                     if not clean or clean in ("[Start speaking]", "[BLANK_AUDIO]"):
                         continue
                     log.info("Committed: %s", clean)
+                    # Replace in-progress with committed text + space
+                    await self._replace_in_progress("")
                     await self._type_text(clean + " ")
-                    self._in_progress = ""
+                    self._typed_len = 0
                 elif char == "\r":
                     clean = ANSI_RE.sub("", line_buf).strip()
                     line_buf = ""
                     if clean and clean not in ("[Start speaking]", "[BLANK_AUDIO]"):
-                        self._in_progress = clean
+                        log.debug("In-progress: %s", clean)
+                        await self._replace_in_progress(clean)
                 else:
                     line_buf += char
 
@@ -347,7 +371,7 @@ class StreamRecorder(BaseRecorder):
         if line_buf:
             clean = ANSI_RE.sub("", line_buf).strip()
             if clean and clean not in ("[Start speaking]", "[BLANK_AUDIO]"):
-                self._in_progress = clean
+                await self._replace_in_progress(clean)
 
     async def stop_and_transcribe(self) -> None:
         """Stop whisper-stream, type remaining in-progress text."""
@@ -369,10 +393,11 @@ class StreamRecorder(BaseRecorder):
                 await self._parse_task
                 self._parse_task = None
 
+            # In-progress text is already on screen — just press Return
             if self._in_progress:
-                log.info("Remaining: %s", self._in_progress)
-                await self._type_text(self._in_progress)
-                self._in_progress = ""
+                log.info("Final in-progress: %s", self._in_progress)
+            self._in_progress = ""
+            self._typed_len = 0
 
             await self._press_key("Return")
             log.info("Streaming stopped")

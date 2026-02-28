@@ -3,11 +3,10 @@
 import asyncio
 import signal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
-# Import from daemon
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "daemon"))
@@ -70,7 +69,11 @@ class FakeStreamReader:
 
 
 class TestParseOutput:
-    """Test _parse_output with simulated whisper-stream byte streams."""
+    """Test _parse_output with simulated whisper-stream byte streams.
+
+    In-progress text is typed immediately and backspaced on updates.
+    Committed text replaces in-progress (backspace + retype + space).
+    """
 
     def _make_recorder(self):
         rec = StreamRecorder(
@@ -82,6 +85,7 @@ class TestParseOutput:
             capture_id=None,
         )
         rec._type_text = AsyncMock()
+        rec._press_key = AsyncMock()
         return rec
 
     @pytest.mark.asyncio
@@ -94,11 +98,13 @@ class TestParseOutput:
 
         await rec._parse_output()
 
-        rec._type_text.assert_called_once_with("hello world ")
+        # Committed: type the final text with space
+        rec._type_text.assert_called_with("hello world ")
         assert rec._in_progress == ""
+        assert rec._typed_len == 0
 
     @pytest.mark.asyncio
-    async def test_in_progress_not_typed(self):
+    async def test_in_progress_typed_immediately(self):
         rec = self._make_recorder()
         data = make_stream_output(("partial", False))
         rec.process = MagicMock()
@@ -107,11 +113,12 @@ class TestParseOutput:
 
         await rec._parse_output()
 
-        rec._type_text.assert_not_called()
+        rec._type_text.assert_called_with("partial")
         assert rec._in_progress == "partial"
+        assert rec._typed_len == 7
 
     @pytest.mark.asyncio
-    async def test_progressive_updates_then_commit(self):
+    async def test_progressive_updates_backspace_and_retype(self):
         rec = self._make_recorder()
         data = make_stream_output(
             ("hel", False),
@@ -124,8 +131,35 @@ class TestParseOutput:
 
         await rec._parse_output()
 
-        rec._type_text.assert_called_once_with("hello world ")
+        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
+        # "hel" typed, backspaced, "hello" typed, backspaced,
+        # then in-progress cleared, "hello world " committed
+        assert "hel" in type_calls
+        assert "hello" in type_calls
+        assert "hello world " in type_calls
         assert rec._in_progress == ""
+        assert rec._typed_len == 0
+
+    @pytest.mark.asyncio
+    async def test_backspace_on_in_progress_update(self):
+        rec = self._make_recorder()
+        data = make_stream_output(
+            ("abc", False),
+            ("abcdef", False),
+        )
+        rec.process = MagicMock()
+        rec.process.stdout = FakeStreamReader(data)
+        rec.streaming = True
+
+        await rec._parse_output()
+
+        # First "abc" typed (3 chars), then backspace 3, then "abcdef"
+        bs_calls = [
+            c for c in rec._press_key.call_args_list
+            if c.args[0] == "BackSpace"
+        ]
+        assert len(bs_calls) == 3  # backspace "abc" before typing "abcdef"
+        assert rec._typed_len == 6
 
     @pytest.mark.asyncio
     async def test_multiple_committed_lines(self):
@@ -140,9 +174,9 @@ class TestParseOutput:
 
         await rec._parse_output()
 
-        assert rec._type_text.call_count == 2
-        calls = [c.args[0] for c in rec._type_text.call_args_list]
-        assert calls == ["first sentence ", "second sentence "]
+        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
+        assert "first sentence " in type_calls
+        assert "second sentence " in type_calls
 
     @pytest.mark.asyncio
     async def test_start_speaking_skipped(self):
@@ -157,7 +191,9 @@ class TestParseOutput:
 
         await rec._parse_output()
 
-        rec._type_text.assert_called_once_with("actual text ")
+        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
+        assert "[Start speaking]" not in type_calls
+        assert "actual text " in type_calls
 
     @pytest.mark.asyncio
     async def test_start_speaking_in_progress_skipped(self):
@@ -170,22 +206,7 @@ class TestParseOutput:
         await rec._parse_output()
 
         assert rec._in_progress == ""
-
-    @pytest.mark.asyncio
-    async def test_committed_then_in_progress_remainder(self):
-        rec = self._make_recorder()
-        data = make_stream_output(
-            ("done sentence", True),
-            ("partial next", False),
-        )
-        rec.process = MagicMock()
-        rec.process.stdout = FakeStreamReader(data)
-        rec.streaming = True
-
-        await rec._parse_output()
-
-        rec._type_text.assert_called_once_with("done sentence ")
-        assert rec._in_progress == "partial next"
+        assert rec._typed_len == 0
 
     @pytest.mark.asyncio
     async def test_blank_audio_committed_skipped(self):
@@ -200,7 +221,9 @@ class TestParseOutput:
 
         await rec._parse_output()
 
-        rec._type_text.assert_called_once_with("actual text ")
+        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
+        assert "[BLANK_AUDIO]" not in type_calls
+        assert "actual text " in type_calls
 
     @pytest.mark.asyncio
     async def test_blank_audio_in_progress_skipped(self):
@@ -213,11 +236,11 @@ class TestParseOutput:
         await rec._parse_output()
 
         assert rec._in_progress == ""
+        assert rec._typed_len == 0
 
     @pytest.mark.asyncio
     async def test_empty_lines_ignored(self):
         rec = self._make_recorder()
-        # Committed empty line should be skipped
         data = b"\x1b[2K\r\n\x1b[2K\rreal text\n"
         rec.process = MagicMock()
         rec.process.stdout = FakeStreamReader(data)
@@ -225,7 +248,27 @@ class TestParseOutput:
 
         await rec._parse_output()
 
-        rec._type_text.assert_called_once_with("real text ")
+        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
+        assert "real text " in type_calls
+
+    @pytest.mark.asyncio
+    async def test_committed_then_in_progress_remainder(self):
+        rec = self._make_recorder()
+        data = make_stream_output(
+            ("done sentence", True),
+            ("partial next", False),
+        )
+        rec.process = MagicMock()
+        rec.process.stdout = FakeStreamReader(data)
+        rec.streaming = True
+
+        await rec._parse_output()
+
+        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
+        assert "done sentence " in type_calls
+        assert "partial next" in type_calls
+        assert rec._in_progress == "partial next"
+        assert rec._typed_len == 12
 
 
 # -- StreamRecorder lifecycle -------------------------------------------------
@@ -235,7 +278,7 @@ class TestStreamRecorderLifecycle:
     """Test start/stop with mocked subprocess."""
 
     @pytest.mark.asyncio
-    async def test_stop_types_remaining_and_presses_return(self):
+    async def test_stop_presses_return_in_progress_already_typed(self):
         rec = StreamRecorder(
             model=Path("/fake/model.bin"),
             display_server="wayland",
@@ -247,18 +290,19 @@ class TestStreamRecorderLifecycle:
         rec._type_text = AsyncMock()
         rec._press_key = AsyncMock()
 
-        # Simulate a running process
         proc = MagicMock()
         proc.wait = AsyncMock(return_value=0)
         proc.returncode = 0
         rec.process = proc
         rec.streaming = True
         rec._in_progress = "leftover text"
+        rec._typed_len = 13  # already on screen
         rec._parse_task = asyncio.create_task(asyncio.sleep(0))
 
         await rec.stop_and_transcribe()
 
-        rec._type_text.assert_called_once_with("leftover text")
+        # In-progress is already typed — just press Return, no extra typing
+        rec._type_text.assert_not_called()
         rec._press_key.assert_called_once_with("Return")
         proc.send_signal.assert_called_once_with(signal.SIGTERM)
         assert not rec.streaming
@@ -282,6 +326,7 @@ class TestStreamRecorderLifecycle:
         rec.process = proc
         rec.streaming = True
         rec._in_progress = ""
+        rec._typed_len = 0
         rec._parse_task = asyncio.create_task(asyncio.sleep(0))
 
         await rec.stop_and_transcribe()
