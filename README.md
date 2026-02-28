@@ -7,9 +7,9 @@ Hold a key to record, release to transcribe and type. Local speech-to-text using
 1. Hold the push-to-talk key (default: F12)
 2. Speak
 3. Release the key
-4. Transcribed text is typed into the focused window
+4. Transcribed text is typed into the focused window (no Enter — compose across multiple segments)
 
-Audio is captured via PulseAudio/PipeWire, transcribed locally by whisper.cpp, and injected via `wtype` (Wayland) or `xdotool` (X11).
+Audio is captured via PulseAudio/PipeWire, transcribed locally by whisper.cpp, and injected via `wtype` (Wayland) or `xdotool` (X11). Multiple keys can trigger push-to-talk simultaneously (e.g. a keyboard key and a mouse button).
 
 ## Transcription modes
 
@@ -20,6 +20,8 @@ Records audio while the key is held, then transcribes the full recording on key-
 ### Stream mode
 
 Uses `whisper-stream` for real-time transcription — text appears as you speak. Uses SDL2 for audio capture with a sliding window approach. **Requires Vulkan GPU** — CPU is too slow for real-time inference. Vulkan is enabled by default in the Nix package.
+
+Stream mode uses a **stability filter**: text is only typed once it has been consistent across 3 consecutive whisper-stream updates. This avoids flickering from the sliding window re-evaluating its buffer. Unstable text is flushed on commit or key-up.
 
 ```bash
 # Standalone stream mode
@@ -54,7 +56,6 @@ services.push-to-talk = {
   user = "your-username";
   key = "KEY_F12";
   whisperModel = "base.en";
-  displayServer = "auto";
 };
 ```
 
@@ -64,7 +65,7 @@ services.push-to-talk = {
   enable = true;
   user = "your-username";
   key = "KEY_F12";
-  whisperModel = "base.en";
+  whisperModel = "small.en";
   mode = "stream";
   # vulkanSupport = true;  # enabled by default, requires Vulkan GPU
   # streamStepMs = 500;    # optional tuning
@@ -74,11 +75,17 @@ services.push-to-talk = {
 };
 ```
 
+The `key` option accepts a string or a list of strings for multiple triggers:
+
+```nix
+services.push-to-talk.key = [ "KEY_F13" "BTN_SIDE" ];
+```
+
 The module adds your user to the `input` group and creates a systemd user service that starts with the graphical session.
 
 ### Key leaking
 
-The daemon reads keys passively via evdev — it does not grab the keyboard. The push-to-talk key will leak into the focused application. To prevent this, remap the key at the compositor or system level. For example, with [keyd](https://github.com/rvaiya/keyd):
+The daemon reads keys passively via evdev — it does not grab the input device. The push-to-talk key will leak into the focused application. To prevent this, remap the key at the compositor or system level. For example, with [keyd](https://github.com/rvaiya/keyd):
 
 ```nix
 services.keyd = {
@@ -102,6 +109,9 @@ nix develop -c python3 daemon/push_to_talk.py --key KEY_F12 --verbose
 
 # Stream mode
 nix develop -c python3 daemon/push_to_talk.py --key KEY_F12 --mode stream --verbose
+
+# Multiple keys
+nix develop -c python3 daemon/push_to_talk.py --key KEY_F12 BTN_SIDE --mode stream --verbose
 ```
 
 Requires your user to be in the `input` group (`sudo usermod -aG input $USER`).
@@ -118,7 +128,7 @@ Models are downloaded automatically on first use to `~/.local/share/whisper/`. A
 | `medium.en` | 1.5 GB | Slow | High |
 | `large` | 2.9 GB | Slowest | Highest |
 
-For real-time dictation, `base.en` offers the best speed/quality tradeoff.
+For batch mode, `base.en` offers the best speed/quality tradeoff. For stream mode with a Vulkan GPU, `small.en` works well.
 
 ## Requirements
 
