@@ -262,12 +262,16 @@ class StreamRecorder(BaseRecorder):
         length_ms: int,
         keep_ms: int,
         capture_id: int | None,
+        vad_thold: float | None = None,
+        no_fallback: bool = False,
     ) -> None:
         super().__init__(model, display_server)
         self.step_ms = step_ms
         self.length_ms = length_ms
         self.keep_ms = keep_ms
         self.capture_id = capture_id
+        self.vad_thold = vad_thold
+        self.no_fallback = no_fallback
         self.process: asyncio.subprocess.Process | None = None
         self.streaming = False
         self._parse_task: asyncio.Task | None = None
@@ -291,6 +295,10 @@ class StreamRecorder(BaseRecorder):
         ]
         if self.capture_id is not None:
             cmd.extend(["--capture", str(self.capture_id)])
+        if self.vad_thold is not None:
+            cmd.extend(["--vad-thold", str(self.vad_thold)])
+        if self.no_fallback:
+            cmd.append("--no-fallback")
 
         self.process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -486,6 +494,8 @@ async def run(args: argparse.Namespace) -> None:
             args.length_ms,
             args.keep_ms,
             args.capture_id,
+            args.vad_thold,
+            args.no_fallback,
         )
     else:
         recorder = Recorder(model, args.display_server)
@@ -549,6 +559,17 @@ def main() -> None:
         type=int,
         default=None,
         help="Stream mode: SDL audio capture device ID",
+    )
+    parser.add_argument(
+        "--vad-thold",
+        type=float,
+        default=None,
+        help="Stream mode: voice activity detection threshold (default: 0.60)",
+    )
+    parser.add_argument(
+        "--no-fallback",
+        action="store_true",
+        help="Stream mode: do not use temperature fallback while decoding",
     )
     parser.add_argument(
         "--verbose",
