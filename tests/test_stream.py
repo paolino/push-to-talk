@@ -3,14 +3,14 @@
 import asyncio
 import signal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "daemon"))
-from push_to_talk import ANSI_RE, BaseRecorder, StreamRecorder
+from push_to_talk import ANSI_RE, STABILITY_THRESHOLD, StreamRecorder
 
 
 # -- ANSI stripping ----------------------------------------------------------
@@ -65,15 +65,70 @@ class FakeStreamReader:
         return chunk
 
 
+# -- Stability filter tests ---------------------------------------------------
+
+
+class TestStabilityFilter:
+    """Test _update_stable: only type text stable across N updates."""
+
+    def _make_recorder(self):
+        return StreamRecorder(
+            model=Path("/fake/model.bin"),
+            display_server="wayland",
+            step_ms=500,
+            length_ms=5000,
+            keep_ms=200,
+            capture_id=None,
+        )
+
+    def test_no_output_before_threshold(self):
+        rec = self._make_recorder()
+        for _ in range(STABILITY_THRESHOLD - 1):
+            assert rec._update_stable("hello world") is None
+
+    def test_stable_text_returned_at_threshold(self):
+        rec = self._make_recorder()
+        for _ in range(STABILITY_THRESHOLD - 1):
+            rec._update_stable("hello world")
+        suffix = rec._update_stable("hello world")
+        assert suffix == "hello world"
+        assert rec._stable_typed == "hello world"
+
+    def test_growing_prefix_returns_increment(self):
+        rec = self._make_recorder()
+        for _ in range(STABILITY_THRESHOLD):
+            rec._update_stable("hello")
+        assert rec._stable_typed == "hello"
+
+        for _ in range(STABILITY_THRESHOLD - 1):
+            rec._update_stable("hello world")
+        suffix = rec._update_stable("hello world")
+        assert suffix == " world"
+        assert rec._stable_typed == "hello world"
+
+    def test_diverging_text_types_only_common(self):
+        rec = self._make_recorder()
+        # Alternating — only the common prefix "hello w" can stabilize
+        texts = ["hello world", "hello ward"] * STABILITY_THRESHOLD
+        results = [rec._update_stable(t) for t in texts]
+        typed = [r for r in results if r is not None]
+        total = "".join(typed)
+        assert "hello world" not in total
+
+    def test_stable_typed_never_shrinks(self):
+        rec = self._make_recorder()
+        for _ in range(STABILITY_THRESHOLD):
+            rec._update_stable("hello world")
+        assert rec._stable_typed == "hello world"
+        rec._update_stable("hello ward")
+        assert rec._stable_typed == "hello world"
+
+
 # -- Parse output tests -------------------------------------------------------
 
 
 class TestParseOutput:
-    """Test _parse_output with simulated whisper-stream byte streams.
-
-    In-progress text is typed immediately and backspaced on updates.
-    Committed text replaces in-progress (backspace + retype + space).
-    """
+    """Test _parse_output: stability-based typing, no backspacing."""
 
     def _make_recorder(self):
         rec = StreamRecorder(
@@ -89,7 +144,7 @@ class TestParseOutput:
         return rec
 
     @pytest.mark.asyncio
-    async def test_committed_line_typed(self):
+    async def test_committed_types_full_text(self):
         rec = self._make_recorder()
         data = make_stream_output(("hello world", True))
         rec.process = MagicMock()
@@ -98,147 +153,57 @@ class TestParseOutput:
 
         await rec._parse_output()
 
-        # Committed: type the final text with space
-        rec._type_text.assert_called_with("hello world ")
-        assert rec._in_progress == ""
-        assert rec._typed_len == 0
+        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
+        assert "hello world " in type_calls
+        assert rec._stable_typed == ""
 
     @pytest.mark.asyncio
-    async def test_in_progress_typed_immediately(self):
+    async def test_stable_then_commit_types_remainder(self):
         rec = self._make_recorder()
-        data = make_stream_output(("partial", False))
+        updates = [("hello world", False)] * STABILITY_THRESHOLD
+        updates.append(("hello world, how are you", True))
+        data = make_stream_output(*updates)
         rec.process = MagicMock()
         rec.process.stdout = FakeStreamReader(data)
         rec.streaming = True
 
         await rec._parse_output()
 
-        rec._type_text.assert_called_with("partial")
-        assert rec._in_progress == "partial"
-        assert rec._typed_len == 7
+        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
+        assert "hello world" in type_calls
+        assert ", how are you " in type_calls
 
     @pytest.mark.asyncio
-    async def test_progressive_updates_append_suffix(self):
+    async def test_never_backspaces(self):
         rec = self._make_recorder()
-        data = make_stream_output(
+        updates = [
             ("hel", False),
             ("hello", False),
+            ("hello wor", False),
+            ("hello world", False),
+            ("hello ward", False),
             ("hello world", True),
-        )
+        ]
+        data = make_stream_output(*updates)
         rec.process = MagicMock()
         rec.process.stdout = FakeStreamReader(data)
         rec.streaming = True
 
         await rec._parse_output()
 
-        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
-        # "hel" typed, then "lo" appended (common prefix "hel"),
-        # then committed: backspace 5, type "hello world "
-        assert "hel" in type_calls
-        assert "lo" in type_calls  # suffix only, not full "hello"
-        assert "hello world " in type_calls
-        assert rec._in_progress == ""
-        assert rec._typed_len == 0
-
-    @pytest.mark.asyncio
-    async def test_common_prefix_no_backspace(self):
-        rec = self._make_recorder()
-        data = make_stream_output(
-            ("abc", False),
-            ("abcdef", False),
-        )
-        rec.process = MagicMock()
-        rec.process.stdout = FakeStreamReader(data)
-        rec.streaming = True
-
-        await rec._parse_output()
-
-        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
-        # "abc" typed, then "def" appended — no backspace needed
-        assert type_calls == ["abc", "def"]
         bs_calls = [
             c for c in rec._press_key.call_args_list
             if c.args[0] == "BackSpace"
         ]
         assert len(bs_calls) == 0
-        assert rec._typed_len == 6
 
     @pytest.mark.asyncio
-    async def test_diverging_suffix_backspaces_diff(self):
-        rec = self._make_recorder()
-        data = make_stream_output(
-            ("hello world", False),
-            ("hello ward", False),
-        )
-        rec.process = MagicMock()
-        rec.process.stdout = FakeStreamReader(data)
-        rec.streaming = True
-
-        await rec._parse_output()
-
-        # "hello world" typed (11), then common prefix "hello w" (7),
-        # backspace 4 ("orld"), type "ard" (3)
-        bs_calls = [
-            c for c in rec._press_key.call_args_list
-            if c.args[0] == "BackSpace"
-        ]
-        assert len(bs_calls) == 4
-        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
-        assert "hello world" in type_calls
-        assert "ard" in type_calls
-        assert rec._typed_len == 10
-
-    @pytest.mark.asyncio
-    async def test_multiple_committed_lines(self):
-        rec = self._make_recorder()
-        data = make_stream_output(
-            ("first sentence", True),
-            ("second sentence", True),
-        )
-        rec.process = MagicMock()
-        rec.process.stdout = FakeStreamReader(data)
-        rec.streaming = True
-
-        await rec._parse_output()
-
-        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
-        assert "first sentence " in type_calls
-        assert "second sentence " in type_calls
-
-    @pytest.mark.asyncio
-    async def test_start_speaking_skipped(self):
+    async def test_skip_markers_filtered(self):
         rec = self._make_recorder()
         data = make_stream_output(
             ("[Start speaking]", True),
-            ("actual text", True),
-        )
-        rec.process = MagicMock()
-        rec.process.stdout = FakeStreamReader(data)
-        rec.streaming = True
-
-        await rec._parse_output()
-
-        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
-        assert "[Start speaking]" not in type_calls
-        assert "actual text " in type_calls
-
-    @pytest.mark.asyncio
-    async def test_start_speaking_in_progress_skipped(self):
-        rec = self._make_recorder()
-        data = make_stream_output(("[Start speaking]", False))
-        rec.process = MagicMock()
-        rec.process.stdout = FakeStreamReader(data)
-        rec.streaming = True
-
-        await rec._parse_output()
-
-        assert rec._in_progress == ""
-        assert rec._typed_len == 0
-
-    @pytest.mark.asyncio
-    async def test_blank_audio_committed_skipped(self):
-        rec = self._make_recorder()
-        data = make_stream_output(
+            ("[BLANK_AUDIO]", False),
+            ("[BLANK_AUDIO]", False),
             ("[BLANK_AUDIO]", True),
             ("actual text", True),
         )
@@ -249,24 +214,11 @@ class TestParseOutput:
         await rec._parse_output()
 
         type_calls = [c.args[0] for c in rec._type_text.call_args_list]
-        assert "[BLANK_AUDIO]" not in type_calls
+        assert all("[" not in c for c in type_calls)
         assert "actual text " in type_calls
 
     @pytest.mark.asyncio
-    async def test_blank_audio_in_progress_skipped(self):
-        rec = self._make_recorder()
-        data = make_stream_output(("[BLANK_AUDIO]", False))
-        rec.process = MagicMock()
-        rec.process.stdout = FakeStreamReader(data)
-        rec.streaming = True
-
-        await rec._parse_output()
-
-        assert rec._in_progress == ""
-        assert rec._typed_len == 0
-
-    @pytest.mark.asyncio
-    async def test_empty_lines_ignored(self):
+    async def test_empty_committed_ignored(self):
         rec = self._make_recorder()
         data = b"\x1b[2K\r\n\x1b[2K\rreal text\n"
         rec.process = MagicMock()
@@ -278,34 +230,14 @@ class TestParseOutput:
         type_calls = [c.args[0] for c in rec._type_text.call_args_list]
         assert "real text " in type_calls
 
-    @pytest.mark.asyncio
-    async def test_committed_then_in_progress_remainder(self):
-        rec = self._make_recorder()
-        data = make_stream_output(
-            ("done sentence", True),
-            ("partial next", False),
-        )
-        rec.process = MagicMock()
-        rec.process.stdout = FakeStreamReader(data)
-        rec.streaming = True
-
-        await rec._parse_output()
-
-        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
-        assert "done sentence " in type_calls
-        assert "partial next" in type_calls
-        assert rec._in_progress == "partial next"
-        assert rec._typed_len == 12
-
 
 # -- StreamRecorder lifecycle -------------------------------------------------
 
 
 class TestStreamRecorderLifecycle:
-    """Test start/stop with mocked subprocess."""
 
     @pytest.mark.asyncio
-    async def test_stop_presses_return_in_progress_already_typed(self):
+    async def test_stop_flushes_untyped_remainder(self):
         rec = StreamRecorder(
             model=Path("/fake/model.bin"),
             display_server="wayland",
@@ -322,20 +254,17 @@ class TestStreamRecorderLifecycle:
         proc.returncode = 0
         rec.process = proc
         rec.streaming = True
-        rec._in_progress = "leftover text"
-        rec._typed_len = 13  # already on screen
+        rec._in_progress = "hello world"
+        rec._stable_typed = "hello"
         rec._parse_task = asyncio.create_task(asyncio.sleep(0))
 
         await rec.stop_and_transcribe()
 
-        # In-progress is already typed — just press Return, no extra typing
-        rec._type_text.assert_not_called()
+        rec._type_text.assert_called_once_with(" world")
         rec._press_key.assert_called_once_with("Return")
-        proc.send_signal.assert_called_once_with(signal.SIGTERM)
-        assert not rec.streaming
 
     @pytest.mark.asyncio
-    async def test_stop_no_remaining_still_presses_return(self):
+    async def test_stop_nothing_to_flush(self):
         rec = StreamRecorder(
             model=Path("/fake/model.bin"),
             display_server="wayland",
@@ -353,7 +282,7 @@ class TestStreamRecorderLifecycle:
         rec.process = proc
         rec.streaming = True
         rec._in_progress = ""
-        rec._typed_len = 0
+        rec._stable_typed = ""
         rec._parse_task = asyncio.create_task(asyncio.sleep(0))
 
         await rec.stop_and_transcribe()
@@ -378,4 +307,3 @@ class TestStreamRecorderLifecycle:
 
         rec._type_text.assert_not_called()
         rec._press_key.assert_not_called()
-
