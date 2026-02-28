@@ -150,10 +150,7 @@ class Recorder:
             notify("Push-to-Talk", f"Typed: {text[:80]}")
 
         finally:
-            try:
-                os.unlink(wav_file)
-            except FileNotFoundError:
-                pass
+            log.info("Keeping WAV for debug: %s", wav_file)
 
     async def _type_text(self, text: str) -> None:
         """Type text into the focused window."""
