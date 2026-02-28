@@ -118,7 +118,7 @@ class TestParseOutput:
         assert rec._typed_len == 7
 
     @pytest.mark.asyncio
-    async def test_progressive_updates_backspace_and_retype(self):
+    async def test_progressive_updates_append_suffix(self):
         rec = self._make_recorder()
         data = make_stream_output(
             ("hel", False),
@@ -132,16 +132,16 @@ class TestParseOutput:
         await rec._parse_output()
 
         type_calls = [c.args[0] for c in rec._type_text.call_args_list]
-        # "hel" typed, backspaced, "hello" typed, backspaced,
-        # then in-progress cleared, "hello world " committed
+        # "hel" typed, then "lo" appended (common prefix "hel"),
+        # then committed: backspace 5, type "hello world "
         assert "hel" in type_calls
-        assert "hello" in type_calls
+        assert "lo" in type_calls  # suffix only, not full "hello"
         assert "hello world " in type_calls
         assert rec._in_progress == ""
         assert rec._typed_len == 0
 
     @pytest.mark.asyncio
-    async def test_backspace_on_in_progress_update(self):
+    async def test_common_prefix_no_backspace(self):
         rec = self._make_recorder()
         data = make_stream_output(
             ("abc", False),
@@ -153,13 +153,40 @@ class TestParseOutput:
 
         await rec._parse_output()
 
-        # First "abc" typed (3 chars), then backspace 3, then "abcdef"
+        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
+        # "abc" typed, then "def" appended — no backspace needed
+        assert type_calls == ["abc", "def"]
         bs_calls = [
             c for c in rec._press_key.call_args_list
             if c.args[0] == "BackSpace"
         ]
-        assert len(bs_calls) == 3  # backspace "abc" before typing "abcdef"
+        assert len(bs_calls) == 0
         assert rec._typed_len == 6
+
+    @pytest.mark.asyncio
+    async def test_diverging_suffix_backspaces_diff(self):
+        rec = self._make_recorder()
+        data = make_stream_output(
+            ("hello world", False),
+            ("hello ward", False),
+        )
+        rec.process = MagicMock()
+        rec.process.stdout = FakeStreamReader(data)
+        rec.streaming = True
+
+        await rec._parse_output()
+
+        # "hello world" typed (11), then common prefix "hello w" (7),
+        # backspace 4 ("orld"), type "ard" (3)
+        bs_calls = [
+            c for c in rec._press_key.call_args_list
+            if c.args[0] == "BackSpace"
+        ]
+        assert len(bs_calls) == 4
+        type_calls = [c.args[0] for c in rec._type_text.call_args_list]
+        assert "hello world" in type_calls
+        assert "ard" in type_calls
+        assert rec._typed_len == 10
 
     @pytest.mark.asyncio
     async def test_multiple_committed_lines(self):
