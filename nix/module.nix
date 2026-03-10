@@ -64,6 +64,12 @@ in
       description = "Enable Vulkan GPU acceleration for whisper.cpp.";
     };
 
+    whisperUrl = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Remote whisper server URL (e.g. http://100.111.19.2:9013/transcribe). If set, uses HTTP instead of local whisper-cli.";
+    };
+
     captureDeviceId = lib.mkOption {
       type = lib.types.nullOr lib.types.int;
       default = null;
@@ -120,6 +126,9 @@ in
           ]
           ++ lib.optionals cfg.noFallback [
             "--no-fallback"
+          ]
+          ++ lib.optionals (cfg.whisperUrl != null) [
+            "--whisper-url ${cfg.whisperUrl}"
           ]
         );
         Restart = "on-failure";
