@@ -262,7 +262,7 @@ class Recorder(BaseRecorder):
                 file_data = f.read()
             body = (
                 f"--{boundary}\r\n"
-                f'Content-Disposition: form-data; name="audio"; filename="audio.wav"\r\n'
+                f'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
                 f"Content-Type: audio/wav\r\n\r\n"
             ).encode() + file_data + f"\r\n--{boundary}--\r\n".encode()
             req = urllib.request.Request(
