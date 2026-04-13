@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.0](https://github.com/paolino/push-to-talk/compare/v1.1.0...v1.2.0) (2026-04-13)
+
+
+### Features
+
+* add --vad-thold and --no-fallback flags to stream mode ([d1ba271](https://github.com/paolino/push-to-talk/commit/d1ba27159c26913431cdb7cde3977bfb319d25e2))
+* add remote whisper support and switch to ydotool ([b75e327](https://github.com/paolino/push-to-talk/commit/b75e3275805094e60aaaf80bcee94c28df09f6da))
+* add vadThreshold and noFallback options to reduce hallucinations ([2596276](https://github.com/paolino/push-to-talk/commit/25962768f41adc004b02e426a4221af61a5c3cb8))
+* use 'file' multipart field for whisper-cpp compatibility ([3f3982c](https://github.com/paolino/push-to-talk/commit/3f3982cec4c830a6692aece2da26bffcf890bf68))
+
+
+### Bug Fixes
+
+* join multi-line whisper-cpp responses into single line ([bd02637](https://github.com/paolino/push-to-talk/commit/bd026376fc453a383e44b695c8775bc5980b7ada))
+
 ## [1.1.0](https://github.com/paolino/push-to-talk/compare/v1.0.0...v1.1.0) (2026-02-28)
 
 
