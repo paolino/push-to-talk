@@ -64,6 +64,12 @@ in
       description = "Enable Vulkan GPU acceleration for whisper.cpp.";
     };
 
+    whisperUrl = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Remote whisper server URL (e.g. http://100.111.19.2:9013/transcribe). If set, uses HTTP instead of local whisper-cli.";
+    };
+
     captureDeviceId = lib.mkOption {
       type = lib.types.nullOr lib.types.int;
       default = null;
@@ -91,13 +97,17 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    users.users.${cfg.user}.extraGroups = [ "input" ];
+    users.users.${cfg.user}.extraGroups = [ "input" "ydotool" ];
+
+    # ydotool daemon for reliable text injection (no space dropping)
+    programs.ydotool.enable = true;
 
     systemd.user.services.push-to-talk = {
       description = "Push-to-talk dictation daemon";
       wantedBy = [ "graphical-session.target" ];
       after = [ "graphical-session.target" "pulseaudio.service" "pipewire.service" ];
 
+      environment.YDOTOOL_SOCKET = "/run/ydotoold/socket";
       serviceConfig = {
         ExecStart = lib.concatStringsSep " " (
           [
@@ -120,6 +130,9 @@ in
           ]
           ++ lib.optionals cfg.noFallback [
             "--no-fallback"
+          ]
+          ++ lib.optionals (cfg.whisperUrl != null) [
+            "--whisper-url ${cfg.whisperUrl}"
           ]
         );
         Restart = "on-failure";

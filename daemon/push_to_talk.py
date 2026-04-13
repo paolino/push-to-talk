@@ -3,6 +3,7 @@
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import re
@@ -10,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import urllib.request
 import wave
 from pathlib import Path
 
@@ -102,15 +104,15 @@ class BaseRecorder:
 
     async def _type_text(self, text: str) -> None:
         """Type text into the focused window."""
-        if self.display_server == "wayland":
-            cmd = ["wtype", "--", text]
+        if self.display_server == "wayland" or (
+            self.display_server == "auto" and os.environ.get("WAYLAND_DISPLAY")
+        ):
+            # Use ydotool which creates a real uinput device — no space dropping
+            cmd = ["ydotool", "type", "-d", "1", "-H", "0", "--", text]
         elif self.display_server == "x11":
             cmd = ["xdotool", "type", "--clearmodifiers", "--", text]
         else:
-            if os.environ.get("WAYLAND_DISPLAY"):
-                cmd = ["wtype", "--", text]
-            else:
-                cmd = ["xdotool", "type", "--clearmodifiers", "--", text]
+            cmd = ["ydotool", "type", "-d", "1", "-H", "0", "--", text]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -137,8 +139,9 @@ class Recorder(BaseRecorder):
     writes WAV on key-up. A short beep signals when recording is live.
     """
 
-    def __init__(self, model: Path, display_server: str) -> None:
+    def __init__(self, model: Path, display_server: str, whisper_url: str | None = None) -> None:
         super().__init__(model, display_server)
+        self.whisper_url = whisper_url
         self.process: asyncio.subprocess.Process | None = None
         self.chunks: list[bytes] = []
         self.recording = False
@@ -213,23 +216,10 @@ class Recorder(BaseRecorder):
         """Run whisper on the WAV file and type the result."""
         try:
             notify("Push-to-Talk", "Transcribing...")
-            result = await asyncio.create_subprocess_exec(
-                "whisper-cli",
-                "-m", str(self.model),
-                "-f", wav_file,
-                "--no-timestamps",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await result.communicate()
-            if result.returncode != 0:
-                log.error("whisper-cli failed: %s", stderr.decode())
-                notify("Push-to-Talk", "Transcription failed")
-                return
-
-            text = stdout.decode().strip()
-            lines = [l for l in text.splitlines() if l.strip()]
-            text = " ".join(lines)
+            if self.whisper_url:
+                text = await self._transcribe_remote(wav_file)
+            else:
+                text = await self._transcribe_local(wav_file)
 
             if not text or text == "[BLANK_AUDIO]":
                 notify("Push-to-Talk", "No speech detected")
@@ -244,6 +234,53 @@ class Recorder(BaseRecorder):
                 os.unlink(wav_file)
             except FileNotFoundError:
                 pass
+
+    async def _transcribe_local(self, wav_file: str) -> str | None:
+        """Transcribe using local whisper-cli."""
+        result = await asyncio.create_subprocess_exec(
+            "whisper-cli",
+            "-m", str(self.model),
+            "-f", wav_file,
+            "--no-timestamps",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await result.communicate()
+        if result.returncode != 0:
+            log.error("whisper-cli failed: %s", stderr.decode())
+            notify("Push-to-Talk", "Transcription failed")
+            return None
+        text = stdout.decode().strip()
+        lines = [l for l in text.splitlines() if l.strip()]
+        return " ".join(lines)
+
+    async def _transcribe_remote(self, wav_file: str) -> str | None:
+        """Transcribe by sending audio to a remote whisper HTTP server."""
+        try:
+            boundary = "----PushToTalkBoundary"
+            with open(wav_file, "rb") as f:
+                file_data = f.read()
+            body = (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="audio"; filename="audio.wav"\r\n'
+                f"Content-Type: audio/wav\r\n\r\n"
+            ).encode() + file_data + f"\r\n--{boundary}--\r\n".encode()
+            req = urllib.request.Request(
+                self.whisper_url,
+                data=body,
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+                method="POST",
+            )
+            loop = asyncio.get_event_loop()
+            resp = await loop.run_in_executor(
+                None, lambda: urllib.request.urlopen(req, timeout=30)
+            )
+            data = json.loads(resp.read().decode())
+            return data.get("text", "").strip()
+        except Exception as e:
+            log.error("Remote transcription failed: %s", e)
+            notify("Push-to-Talk", "Remote transcription failed")
+            return None
 
 
 class StreamRecorder(BaseRecorder):
@@ -498,7 +535,7 @@ async def run(args: argparse.Namespace) -> None:
             args.no_fallback,
         )
     else:
-        recorder = Recorder(model, args.display_server)
+        recorder = Recorder(model, args.display_server, whisper_url=args.whisper_url)
 
     key_names = ", ".join(args.key)
     notify("Push-to-Talk", f"Ready ({args.mode}). Hold {key_names} to dictate.")
@@ -570,6 +607,11 @@ def main() -> None:
         "--no-fallback",
         action="store_true",
         help="Stream mode: do not use temperature fallback while decoding",
+    )
+    parser.add_argument(
+        "--whisper-url",
+        default=None,
+        help="Remote whisper server URL (e.g. http://100.111.19.2:9013/transcribe). If set, uses HTTP instead of local whisper-cli.",
     )
     parser.add_argument(
         "--verbose",

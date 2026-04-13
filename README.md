@@ -9,7 +9,7 @@ Hold a key to record, release to transcribe and type. Local speech-to-text using
 3. Release the key
 4. Transcribed text is typed into the focused window (no Enter — compose across multiple segments)
 
-Audio is captured via PulseAudio/PipeWire, transcribed locally by whisper.cpp, and injected via `wtype` (Wayland) or `xdotool` (X11). Multiple keys can trigger push-to-talk simultaneously (e.g. a keyboard key and a mouse button).
+Audio is captured via PulseAudio/PipeWire, transcribed by whisper.cpp (locally or via a remote [whisper-server](https://github.com/paolino/whisper-server)), and injected via `ydotool` (Wayland) or `xdotool` (X11). Multiple keys can trigger push-to-talk simultaneously (e.g. a keyboard key and a mouse button).
 
 ## Transcription modes
 
@@ -50,12 +50,23 @@ inputs.push-to-talk.nixosModules.default
 ```
 
 ```nix
-# Batch mode (default)
+# Batch mode with local whisper.cpp (default)
 services.push-to-talk = {
   enable = true;
   user = "your-username";
   key = "KEY_F12";
   whisperModel = "base.en";
+};
+```
+
+```nix
+# Batch mode with remote whisper server
+services.push-to-talk = {
+  enable = true;
+  user = "your-username";
+  key = "KEY_F12";
+  displayServer = "wayland";
+  whisperUrl = "http://your-server:9013/transcribe";
 };
 ```
 
@@ -81,7 +92,11 @@ The `key` option accepts a string or a list of strings for multiple triggers:
 services.push-to-talk.key = [ "KEY_F13" "BTN_SIDE" ];
 ```
 
-The module adds your user to the `input` group and creates a systemd user service that starts with the graphical session.
+The module adds your user to the `input` and `ydotool` groups, enables the `ydotoold` daemon, and creates a systemd user service that starts with the graphical session.
+
+### Remote whisper server
+
+Instead of running whisper.cpp locally, you can point push-to-talk at a remote [whisper-server](https://github.com/paolino/whisper-server) instance via `whisperUrl`. Audio is recorded locally, sent as a WAV file over HTTP, and the transcribed text is returned. This is useful when your workstation lacks the CPU/GPU for fast transcription but you have a server that does.
 
 ### Key leaking
 
@@ -139,7 +154,8 @@ This project is only tested on NixOS. The instructions below are provided as gui
 - Python 3.11+
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — `whisper-cli` (batch mode) and `whisper-stream` (stream mode) must be on `PATH`
 - [python-evdev](https://python-evdev.readthedocs.io/) — `pip install evdev`
-- `wtype` (Wayland) or `xdotool` (X11) for typing output
+- `ydotool` (Wayland, recommended) or `xdotool` (X11) for typing output
+- `wtype` is also supported but may drop spaces in some compositor/terminal combinations
 - `parecord` (from PulseAudio/PipeWire) for audio capture in batch mode
 - Stream mode: SDL2 with audio capture support, Vulkan GPU drivers
 
@@ -175,8 +191,8 @@ python3 daemon/push_to_talk.py --key KEY_F12 --mode stream --verbose
 ## Requirements
 
 - Linux with PulseAudio or PipeWire (with PulseAudio compatibility)
-- Wayland (`wtype`) or X11 (`xdotool`) for typing output
-- User in `input` group for evdev access
+- Wayland (`ydotool` + `ydotoold`) or X11 (`xdotool`) for typing output
+- User in `input` and `ydotool` groups
 - Stream mode: Vulkan-capable GPU and SDL2 audio support (provided via Nix wrapper on NixOS)
 
 ## License

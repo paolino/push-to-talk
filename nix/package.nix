@@ -6,6 +6,7 @@
   sox,
   wtype,
   xdotool,
+  ydotool,
   libnotify,
   pulseaudio,
   curl,
@@ -38,6 +39,7 @@ python3.pkgs.buildPythonApplication {
         sox
         wtype
         xdotool
+        ydotool
         libnotify
         pulseaudio
         curl
