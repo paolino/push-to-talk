@@ -276,7 +276,9 @@ class Recorder(BaseRecorder):
                 None, lambda: urllib.request.urlopen(req, timeout=30)
             )
             data = json.loads(resp.read().decode())
-            return data.get("text", "").strip()
+            text = data.get("text", "").strip()
+            # whisper-cpp returns newlines between segments — join into one line
+            return " ".join(line.strip() for line in text.splitlines() if line.strip())
         except Exception as e:
             log.error("Remote transcription failed: %s", e)
             notify("Push-to-Talk", "Remote transcription failed")
