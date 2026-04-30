@@ -64,6 +64,12 @@ in
       description = "Enable Vulkan GPU acceleration for whisper.cpp.";
     };
 
+    tailMs = lib.mkOption {
+      type = lib.types.int;
+      default = 2000;
+      description = "Batch mode: extra recording time in ms after key release (default: 2000).";
+    };
+
     whisperUrl = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -116,6 +122,7 @@ in
             "--model ${cfg.whisperModel}"
             "--display-server ${cfg.displayServer}"
             "--mode ${cfg.mode}"
+            "--tail-ms ${toString cfg.tailMs}"
           ]
           ++ lib.optionals (cfg.mode == "stream") [
             "--step-ms ${toString cfg.streamStepMs}"

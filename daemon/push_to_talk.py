@@ -108,11 +108,11 @@ class BaseRecorder:
             self.display_server == "auto" and os.environ.get("WAYLAND_DISPLAY")
         ):
             # Use ydotool which creates a real uinput device — no space dropping
-            cmd = ["ydotool", "type", "-d", "1", "-H", "0", "--", text]
+            cmd = ["ydotool", "type", "-d", "2", "-H", "0", "--", text]
         elif self.display_server == "x11":
             cmd = ["xdotool", "type", "--clearmodifiers", "--", text]
         else:
-            cmd = ["ydotool", "type", "-d", "1", "-H", "0", "--", text]
+            cmd = ["ydotool", "type", "-d", "2", "-H", "0", "--", text]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -139,9 +139,10 @@ class Recorder(BaseRecorder):
     writes WAV on key-up. A short beep signals when recording is live.
     """
 
-    def __init__(self, model: Path, display_server: str, whisper_url: str | None = None) -> None:
+    def __init__(self, model: Path, display_server: str, whisper_url: str | None = None, tail_ms: int = 2000) -> None:
         super().__init__(model, display_server)
         self.whisper_url = whisper_url
+        self.tail_ms = tail_ms
         self.process: asyncio.subprocess.Process | None = None
         self.chunks: list[bytes] = []
         self.recording = False
@@ -186,7 +187,7 @@ class Recorder(BaseRecorder):
             self.process = None
             self.recording = False
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(self.tail_ms / 1000)
             proc.kill()
             await proc.wait()
             if self._read_task:
@@ -500,8 +501,12 @@ async def monitor_device(
 
 async def run(args: argparse.Namespace) -> None:
     """Main async entry point."""
-    model = model_path(args.model)
-    log.info("Using model: %s", model)
+    if args.whisper_url:
+        model = None
+        log.info("Using remote whisper server: %s", args.whisper_url)
+    else:
+        model = model_path(args.model)
+        log.info("Using model: %s", model)
 
     key_codes = set()
     for key_name in args.key:
@@ -537,7 +542,7 @@ async def run(args: argparse.Namespace) -> None:
             args.no_fallback,
         )
     else:
-        recorder = Recorder(model, args.display_server, whisper_url=args.whisper_url)
+        recorder = Recorder(model, args.display_server, whisper_url=args.whisper_url, tail_ms=args.tail_ms)
 
     key_names = ", ".join(args.key)
     notify("Push-to-Talk", f"Ready ({args.mode}). Hold {key_names} to dictate.")
@@ -609,6 +614,12 @@ def main() -> None:
         "--no-fallback",
         action="store_true",
         help="Stream mode: do not use temperature fallback while decoding",
+    )
+    parser.add_argument(
+        "--tail-ms",
+        type=int,
+        default=2000,
+        help="Batch mode: extra recording time in ms after key release (default: 2000)",
     )
     parser.add_argument(
         "--whisper-url",
