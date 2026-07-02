@@ -107,12 +107,15 @@ class BaseRecorder:
         if self.display_server == "wayland" or (
             self.display_server == "auto" and os.environ.get("WAYLAND_DISPLAY")
         ):
-            # Use ydotool which creates a real uinput device — no space dropping
-            cmd = ["ydotool", "type", "-d", "2", "-H", "0", "--", text]
+            # Type at full speed: TUI apps (e.g. Claude Code) drop
+            # individual rapid space keypresses, but a zero-delay burst
+            # coalesces at the pty into paste-like chunks that survive
+            # intact. Any inter-key delay makes the dropping worse.
+            cmd = ["ydotool", "type", "-d", "0", "-H", "0", "--", text]
         elif self.display_server == "x11":
             cmd = ["xdotool", "type", "--clearmodifiers", "--", text]
         else:
-            cmd = ["ydotool", "type", "-d", "2", "-H", "0", "--", text]
+            cmd = ["ydotool", "type", "-d", "0", "-H", "0", "--", text]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
