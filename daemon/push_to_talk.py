@@ -126,6 +126,48 @@ class BaseRecorder:
         if proc.returncode != 0:
             log.error("Typing failed: %s", stderr.decode())
 
+    async def _paste_text(self, text: str) -> None:
+        """Paste text via the clipboard instead of synthetic keystrokes.
+
+        A whole-utterance zero-delay keystroke burst (see _type_text)
+        races with the target app's input loop: TUI apps (e.g. Claude
+        Code) can drop characters or misfire an Enter mid-burst,
+        splitting one utterance into garbled fragments. A single paste
+        event has no per-character race. This clobbers the system
+        clipboard.
+        """
+        if self.display_server == "wayland" or (
+            self.display_server == "auto" and os.environ.get("WAYLAND_DISPLAY")
+        ):
+            copy_cmd = ["wl-copy"]
+            paste_cmd = ["ydotool", "key", "29:1", "47:1", "47:0", "29:0"]  # ctrl+v
+        elif self.display_server == "x11":
+            copy_cmd = ["xclip", "-selection", "clipboard"]
+            paste_cmd = ["xdotool", "key", "--clearmodifiers", "ctrl+v"]
+        else:
+            copy_cmd = ["wl-copy"]
+            paste_cmd = ["ydotool", "key", "29:1", "47:1", "47:0", "29:0"]
+
+        proc = await asyncio.create_subprocess_exec(
+            *copy_cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate(text.encode())
+        if proc.returncode != 0:
+            log.error("Clipboard copy failed: %s", stderr.decode())
+            return
+
+        proc = await asyncio.create_subprocess_exec(
+            *paste_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            log.error("Paste failed: %s", stderr.decode())
+
     async def start(self) -> None:
         """Start recording or streaming."""
         raise NotImplementedError
@@ -230,7 +272,7 @@ class Recorder(BaseRecorder):
                 return
 
             log.info("Transcribed: %s", text)
-            await self._type_text(text + " ")
+            await self._paste_text(text + " ")
             notify("Push-to-Talk", f"Typed: {text[:80]}")
 
         finally:
