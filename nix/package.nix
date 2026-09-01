@@ -7,6 +7,7 @@
   wtype,
   xdotool,
   ydotool,
+  wl-clipboard,
   libnotify,
   pulseaudio,
   curl,
@@ -40,6 +41,7 @@ python3.pkgs.buildPythonApplication {
         wtype
         xdotool
         ydotool
+        wl-clipboard
         libnotify
         pulseaudio
         curl
