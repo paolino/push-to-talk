@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import wave
 from pathlib import Path
@@ -164,17 +165,23 @@ class BaseRecorder:
             copy_cmd = ["wl-copy"]
             paste_cmd = ydotool_paste
 
+        started = time.monotonic()
         saved = await self._save_clipboard()
 
+        # stdout/stderr must NOT be pipes: wl-copy forks a background
+        # process to serve the selection, and that child inherits them.
+        # Waiting for EOF would then block until some other application
+        # takes the clipboard — measured at 12s+ — firing the paste
+        # keystroke long after focus has moved on.
         proc = await asyncio.create_subprocess_exec(
             *copy_cmd,
             stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
         )
-        _, stderr = await proc.communicate(text.encode())
+        await proc.communicate(text.encode())
         if proc.returncode != 0:
-            log.error("Clipboard copy failed: %s", stderr.decode())
+            log.error("Clipboard copy failed (rc=%s)", proc.returncode)
             return
 
         proc = await asyncio.create_subprocess_exec(
@@ -186,7 +193,11 @@ class BaseRecorder:
         if proc.returncode != 0:
             log.error("Paste failed: %s", stderr.decode())
         else:
-            log.info("Pasted %d chars via clipboard", len(text))
+            log.info(
+                "Pasted %d chars via clipboard (%.2fs)",
+                len(text),
+                time.monotonic() - started,
+            )
 
         # The receiving app fetches the selection asynchronously after
         # the keystroke; restoring immediately would hand it the old
@@ -224,22 +235,23 @@ class BaseRecorder:
         if saved is None:
             proc = await asyncio.create_subprocess_exec(
                 "wl-copy", "--clear",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
             )
             await proc.communicate()
             return
 
+        # DEVNULL for the same reason as in _paste_text.
         mime, data = saved
         proc = await asyncio.create_subprocess_exec(
             "wl-copy", "--type", mime,
             stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
         )
-        _, stderr = await proc.communicate(data)
+        await proc.communicate(data)
         if proc.returncode != 0:
-            log.error("Clipboard restore failed: %s", stderr.decode())
+            log.error("Clipboard restore failed (rc=%s)", proc.returncode)
 
     async def start(self) -> None:
         """Start recording or streaming."""
