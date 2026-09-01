@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import wave
 from pathlib import Path
@@ -126,6 +127,61 @@ class BaseRecorder:
         if proc.returncode != 0:
             log.error("Typing failed: %s", stderr.decode())
 
+    async def _paste_text(self, text: str) -> None:
+        """Inject text via the PRIMARY selection and shift+Insert.
+
+        Typing the transcript as synthetic keystrokes garbles it: the
+        journal shows a clean sentence while the application receives
+        dropped and reordered characters. Delivering it as a single
+        paste event avoids the per-character race entirely.
+
+        PRIMARY rather than CLIPBOARD, because clipboard managers keep
+        history — dictating would churn it on every utterance, and
+        save/restore cannot undo that. PRIMARY holds the mouse-selection
+        buffer, is not recorded as history, and is already overwritten
+        by any ordinary text selection, so borrowing it costs nothing.
+        """
+        started = time.monotonic()
+        # shift+Insert: LEFTSHIFT=42, INSERT=110
+        ydotool_paste = ["ydotool", "key", "42:1", "110:1", "110:0", "42:0"]
+        if self.display_server == "x11":
+            copy_cmd = ["xclip", "-selection", "primary"]
+            paste_cmd = ["xdotool", "key", "--clearmodifiers", "shift+Insert"]
+        else:
+            copy_cmd = ["wl-copy", "--primary"]
+            paste_cmd = ydotool_paste
+
+        # stdout/stderr must NOT be pipes: wl-copy forks a background
+        # process to serve the selection, and that child inherits them.
+        # Waiting for EOF would then block until another application
+        # takes the selection — measured at 12.5s — firing the paste
+        # keystroke long after focus has moved on.
+        proc = await asyncio.create_subprocess_exec(
+            *copy_cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.communicate(text.encode())
+        if proc.returncode != 0:
+            log.error("Selection copy failed (rc=%s)", proc.returncode)
+            return
+
+        proc = await asyncio.create_subprocess_exec(
+            *paste_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            log.error("Paste failed: %s", stderr.decode())
+        else:
+            log.info(
+                "Pasted %d chars via primary selection (%.2fs)",
+                len(text),
+                time.monotonic() - started,
+            )
+
     async def start(self) -> None:
         """Start recording or streaming."""
         raise NotImplementedError
@@ -230,7 +286,7 @@ class Recorder(BaseRecorder):
                 return
 
             log.info("Transcribed: %s", text)
-            await self._type_text(text + " ")
+            await self._paste_text(text + " ")
             notify("Push-to-Talk", f"Typed: {text[:80]}")
 
         finally:
