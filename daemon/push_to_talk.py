@@ -37,6 +37,9 @@ SKIP_MARKERS = ("[Start speaking]", "[BLANK_AUDIO]")
 # How many consecutive in-progress updates must agree before typing
 STABILITY_THRESHOLD = 3
 
+# Grace period before restoring the clipboard after a paste keystroke
+CLIPBOARD_RESTORE_DELAY_S = 0.4
+
 
 def model_path(model_name: str) -> Path:
     """Return path to the whisper model file, downloading if needed."""
@@ -135,18 +138,33 @@ class BaseRecorder:
         splitting one utterance into garbled fragments. A single paste
         event has no per-character race. This clobbers the system
         clipboard.
+
+        Uses ctrl+shift+v, the paste binding in terminals, which is
+        where dictation is actually used. Plain ctrl+v is a no-op
+        there — it does not reach the application as paste.
+
+        The previous clipboard contents (including its MIME type, so
+        images survive) are saved and restored afterwards, so dictating
+        never costs the user whatever they had copied.
         """
+        # ctrl+shift+v: LEFTCTRL=29, LEFTSHIFT=42, V=47
+        ydotool_paste = [
+            "ydotool", "key",
+            "29:1", "42:1", "47:1", "47:0", "42:0", "29:0",
+        ]
         if self.display_server == "wayland" or (
             self.display_server == "auto" and os.environ.get("WAYLAND_DISPLAY")
         ):
             copy_cmd = ["wl-copy"]
-            paste_cmd = ["ydotool", "key", "29:1", "47:1", "47:0", "29:0"]  # ctrl+v
+            paste_cmd = ydotool_paste
         elif self.display_server == "x11":
             copy_cmd = ["xclip", "-selection", "clipboard"]
-            paste_cmd = ["xdotool", "key", "--clearmodifiers", "ctrl+v"]
+            paste_cmd = ["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"]
         else:
             copy_cmd = ["wl-copy"]
-            paste_cmd = ["ydotool", "key", "29:1", "47:1", "47:0", "29:0"]
+            paste_cmd = ydotool_paste
+
+        saved = await self._save_clipboard()
 
         proc = await asyncio.create_subprocess_exec(
             *copy_cmd,
@@ -167,6 +185,61 @@ class BaseRecorder:
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
             log.error("Paste failed: %s", stderr.decode())
+        else:
+            log.info("Pasted %d chars via clipboard", len(text))
+
+        # The receiving app fetches the selection asynchronously after
+        # the keystroke; restoring immediately would hand it the old
+        # contents instead of the transcript.
+        await asyncio.sleep(CLIPBOARD_RESTORE_DELAY_S)
+        await self._restore_clipboard(saved)
+
+    async def _save_clipboard(self) -> tuple[str, bytes] | None:
+        """Capture current clipboard as (mime_type, data), if any."""
+        proc = await asyncio.create_subprocess_exec(
+            "wl-paste", "--list-types",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return None  # empty clipboard
+        types = [t for t in stdout.decode().split() if t]
+        if not types:
+            return None
+        mime = types[0]
+
+        proc = await asyncio.create_subprocess_exec(
+            "wl-paste", "--type", mime, "--no-newline",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return None
+        return (mime, stdout)
+
+    async def _restore_clipboard(self, saved: tuple[str, bytes] | None) -> None:
+        """Put back what was on the clipboard before dictation."""
+        if saved is None:
+            proc = await asyncio.create_subprocess_exec(
+                "wl-copy", "--clear",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+            return
+
+        mime, data = saved
+        proc = await asyncio.create_subprocess_exec(
+            "wl-copy", "--type", mime,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate(data)
+        if proc.returncode != 0:
+            log.error("Clipboard restore failed: %s", stderr.decode())
 
     async def start(self) -> None:
         """Start recording or streaming."""
