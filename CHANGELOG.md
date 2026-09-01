@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.2.0](https://github.com/paolino/push-to-talk/compare/v1.1.0...v1.2.0) (2026-09-01)
+
+
+### Features
+
+* add --vad-thold and --no-fallback flags to stream mode ([d1ba271](https://github.com/paolino/push-to-talk/commit/d1ba27159c26913431cdb7cde3977bfb319d25e2))
+* add remote whisper support and switch to ydotool ([b75e327](https://github.com/paolino/push-to-talk/commit/b75e3275805094e60aaaf80bcee94c28df09f6da))
+* add vadThreshold and noFallback options to reduce hallucinations ([2596276](https://github.com/paolino/push-to-talk/commit/25962768f41adc004b02e426a4221af61a5c3cb8))
+* configurable tail-ms + bump ydotool inter-key delay to 2ms ([848bf7b](https://github.com/paolino/push-to-talk/commit/848bf7b3214a9c67842342f4eab36b377d58e6cf))
+* use 'file' multipart field for whisper-cpp compatibility ([3f3982c](https://github.com/paolino/push-to-talk/commit/3f3982cec4c830a6692aece2da26bffcf890bf68))
+
+
+### Bug Fixes
+
+* inject dictated text via clipboard paste, not keystroke burst ([3769990](https://github.com/paolino/push-to-talk/commit/3769990790493ea548517c96c77b5b9d58fd0d00))
+* inject via PRIMARY selection and shift+Insert ([84e232c](https://github.com/paolino/push-to-talk/commit/84e232cff7d168d8544fbd24d95c750101e5cb8e))
+* join multi-line whisper-cpp responses into single line ([bd02637](https://github.com/paolino/push-to-talk/commit/bd026376fc453a383e44b695c8775bc5980b7ada))
+* paste with ctrl+shift+v and preserve the clipboard ([9413928](https://github.com/paolino/push-to-talk/commit/94139282b13174fa902bc80aee040bdfbb75c6c1))
+* stop wl-copy blocking the paste keystroke ([2ea5b9e](https://github.com/paolino/push-to-talk/commit/2ea5b9e648db10ce2fbadb06d1f11580d218ff6d))
+* type with zero ydotool inter-key delay to avoid dropped spaces ([5cb724d](https://github.com/paolino/push-to-talk/commit/5cb724df5a623d8ec4e7ec70dc04fc8ce5e5600e))
+
+
+### Reverts
+
+* go back to ydotool typing, drop clipboard injection ([219293a](https://github.com/paolino/push-to-talk/commit/219293a51c71faa306707e4823486232035881c0))
+
 ## [1.1.0](https://github.com/paolino/push-to-talk/compare/v1.0.0...v1.1.0) (2026-02-28)
 
 
