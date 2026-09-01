@@ -24,7 +24,6 @@
           pkgs.sox
           pkgs.wtype
           pkgs.xdotool
-          pkgs.wl-clipboard
           pkgs.libnotify
           pkgs.pulseaudio
           pkgs.curl
