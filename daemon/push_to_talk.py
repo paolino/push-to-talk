@@ -28,7 +28,10 @@ MODEL_URLS = {
     "small": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
     "medium.en": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin",
     "medium": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
-    "large": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large.bin",
+    "large-v3": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+    "large-v3-turbo": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+    "large-v3-turbo-q8_0": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q8_0.bin",
+    "large-v3-turbo-q5_0": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
 }
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -84,9 +87,12 @@ def find_devices(key_code: int) -> list[evdev.InputDevice]:
 class BaseRecorder:
     """Shared functionality for batch and stream recorders."""
 
-    def __init__(self, model: Path, display_server: str) -> None:
+    def __init__(
+        self, model: Path, display_server: str, language: str = "en"
+    ) -> None:
         self.model = model
         self.display_server = display_server
+        self.language = language
 
     async def _press_key(self, key: str) -> None:
         """Press a single key via wtype/xdotool."""
@@ -198,8 +204,15 @@ class Recorder(BaseRecorder):
     writes WAV on key-up. A short beep signals when recording is live.
     """
 
-    def __init__(self, model: Path, display_server: str, whisper_url: str | None = None, tail_ms: int = 2000) -> None:
-        super().__init__(model, display_server)
+    def __init__(
+        self,
+        model: Path,
+        display_server: str,
+        whisper_url: str | None = None,
+        tail_ms: int = 2000,
+        language: str = "en",
+    ) -> None:
+        super().__init__(model, display_server, language)
         self.whisper_url = whisper_url
         self.tail_ms = tail_ms
         self.process: asyncio.subprocess.Process | None = None
@@ -301,6 +314,7 @@ class Recorder(BaseRecorder):
             "whisper-cli",
             "-m", str(self.model),
             "-f", wav_file,
+            "-l", self.language,
             "--no-timestamps",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -363,8 +377,9 @@ class StreamRecorder(BaseRecorder):
         capture_id: int | None,
         vad_thold: float | None = None,
         no_fallback: bool = False,
+        language: str = "en",
     ) -> None:
-        super().__init__(model, display_server)
+        super().__init__(model, display_server, language)
         self.step_ms = step_ms
         self.length_ms = length_ms
         self.keep_ms = keep_ms
@@ -391,6 +406,7 @@ class StreamRecorder(BaseRecorder):
             "--keep", str(self.keep_ms),
             "-kc",
             "-m", str(self.model),
+            "-l", self.language,
         ]
         if self.capture_id is not None:
             cmd.extend(["--capture", str(self.capture_id)])
@@ -599,9 +615,16 @@ async def run(args: argparse.Namespace) -> None:
             args.capture_id,
             args.vad_thold,
             args.no_fallback,
+            language=args.language,
         )
     else:
-        recorder = Recorder(model, args.display_server, whisper_url=args.whisper_url, tail_ms=args.tail_ms)
+        recorder = Recorder(
+            model,
+            args.display_server,
+            whisper_url=args.whisper_url,
+            tail_ms=args.tail_ms,
+            language=args.language,
+        )
 
     key_names = ", ".join(args.key)
     notify("Push-to-Talk", f"Ready ({args.mode}). Hold {key_names} to dictate.")
@@ -684,6 +707,13 @@ def main() -> None:
         "--whisper-url",
         default=None,
         help="Remote whisper server URL (e.g. http://100.111.19.2:9013/transcribe). If set, uses HTTP instead of local whisper-cli.",
+    )
+    parser.add_argument(
+        "--language",
+        default="en",
+        help="Spoken language code (e.g. en, it, pt) or 'auto' to detect it. "
+        "English-only .en models always transcribe English. "
+        "Local whisper only (default: en)",
     )
     parser.add_argument(
         "--verbose",
