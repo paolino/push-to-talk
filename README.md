@@ -150,6 +150,22 @@ Models ending in `.en` are English-only. To dictate in other languages pick a
 multilingual model and set `language` (e.g. `"it"`, or `"auto"` to detect the
 language of each utterance; `--language` on the command line).
 
+To dictate in more than one language without auto-detection (which costs an
+extra encoder pass), give each language its own key. Keys in `key` use
+`language`; each entry of `keyLanguages` adds a key with its own language
+(`--key-language KEY_F14=it` on the command line):
+
+```nix
+services.push-to-talk = {
+  key = "KEY_F13";
+  language = "en";
+  keyLanguages = { KEY_F14 = "it"; };
+  whisperModel = "large-v3-turbo-q5_0";
+};
+```
+
+The extra key can be a keyd chord, e.g. `f12+i = f14` next to `f12 = f13`.
+
 For batch mode, `base.en` offers the best speed/quality tradeoff. For stream mode with a Vulkan GPU, `small.en` works well.
 
 ## Non-NixOS installation (untested)

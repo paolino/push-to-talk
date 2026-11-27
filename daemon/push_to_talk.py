@@ -72,6 +72,17 @@ def notify(title: str, body: str) -> None:
         pass
 
 
+def parse_key_languages(specs: list[str]) -> dict[str, str]:
+    """Parse KEY=LANG pairs, e.g. ["KEY_F14=it"] -> {"KEY_F14": "it"}."""
+    mapping = {}
+    for spec in specs:
+        key, sep, lang = spec.partition("=")
+        if not sep or not key or not lang:
+            raise ValueError(f"expected KEY=LANG, got {spec!r}")
+        mapping[key] = lang
+    return mapping
+
+
 def find_devices(key_code: int) -> list[evdev.InputDevice]:
     """Find all input devices that support the given key/button code."""
     devices = []
@@ -93,6 +104,8 @@ class BaseRecorder:
         self.model = model
         self.display_server = display_server
         self.language = language
+        # Language of the press being recorded (per-key override or default)
+        self.active_language = language
 
     async def _press_key(self, key: str) -> None:
         """Press a single key via wtype/xdotool."""
@@ -188,8 +201,8 @@ class BaseRecorder:
                 time.monotonic() - started,
             )
 
-    async def start(self) -> None:
-        """Start recording or streaming."""
+    async def start(self, language: str | None = None) -> None:
+        """Start recording or streaming, in `language` or the default."""
         raise NotImplementedError
 
     async def stop_and_transcribe(self) -> None:
@@ -229,10 +242,11 @@ class Recorder(BaseRecorder):
                 break
             self.chunks.append(chunk)
 
-    async def start(self) -> None:
+    async def start(self, language: str | None = None) -> None:
         """Start parec and collect audio chunks."""
         if self.recording:
             return
+        self.active_language = language or self.language
         self.chunks = []
         self.process = await asyncio.create_subprocess_exec(
             "parec",
@@ -258,6 +272,9 @@ class Recorder(BaseRecorder):
             proc = self.process
             self.process = None
             self.recording = False
+            # Capture now: a new press may change active_language while
+            # this clip is still being transcribed.
+            language = self.active_language
 
             await asyncio.sleep(self.tail_ms / 1000)
             proc.kill()
@@ -283,16 +300,16 @@ class Recorder(BaseRecorder):
                 wf.setframerate(16000)
                 wf.writeframes(pcm_data)
 
-            await self._transcribe_and_type(wav_file)
+            await self._transcribe_and_type(wav_file, language)
 
-    async def _transcribe_and_type(self, wav_file: str) -> None:
+    async def _transcribe_and_type(self, wav_file: str, language: str) -> None:
         """Run whisper on the WAV file and type the result."""
         try:
             notify("Push-to-Talk", "Transcribing...")
             if self.whisper_url:
                 text = await self._transcribe_remote(wav_file)
             else:
-                text = await self._transcribe_local(wav_file)
+                text = await self._transcribe_local(wav_file, language)
 
             if not text or text == "[BLANK_AUDIO]":
                 notify("Push-to-Talk", "No speech detected")
@@ -308,13 +325,13 @@ class Recorder(BaseRecorder):
             except FileNotFoundError:
                 pass
 
-    async def _transcribe_local(self, wav_file: str) -> str | None:
+    async def _transcribe_local(self, wav_file: str, language: str) -> str | None:
         """Transcribe using local whisper-cli."""
         result = await asyncio.create_subprocess_exec(
             "whisper-cli",
             "-m", str(self.model),
             "-f", wav_file,
-            "-l", self.language,
+            "-l", language,
             "--no-timestamps",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -394,10 +411,11 @@ class StreamRecorder(BaseRecorder):
         self._prev_texts: list[str] = []  # history for stability detection
         self._transcribe_lock = asyncio.Lock()
 
-    async def start(self) -> None:
+    async def start(self, language: str | None = None) -> None:
         """Launch whisper-stream for real-time transcription."""
         if self.streaming:
             return
+        self.active_language = language or self.language
 
         cmd = [
             "whisper-stream",
@@ -406,7 +424,7 @@ class StreamRecorder(BaseRecorder):
             "--keep", str(self.keep_ms),
             "-kc",
             "-m", str(self.model),
-            "-l", self.language,
+            "-l", self.active_language,
         ]
         if self.capture_id is not None:
             cmd.extend(["--capture", str(self.capture_id)])
@@ -561,13 +579,19 @@ async def monitor_device(
     device: evdev.InputDevice,
     key_codes: set[int],
     recorder: BaseRecorder,
+    key_languages: dict[int, str] | None = None,
 ) -> None:
-    """Monitor an input device for PTT keys/buttons (passive, no grab)."""
+    """Monitor an input device for PTT keys/buttons (passive, no grab).
+
+    A key listed in `key_languages` records in that language; other keys
+    use the recorder's default language.
+    """
+    key_languages = key_languages or {}
     try:
         async for event in device.async_read_loop():
             if event.type == ecodes.EV_KEY and event.code in key_codes:
                 if event.value == 1:  # key down
-                    await recorder.start()
+                    await recorder.start(key_languages.get(event.code))
                 elif event.value == 0:  # key up
                     await recorder.stop_and_transcribe()
     except OSError as e:
@@ -583,14 +607,26 @@ async def run(args: argparse.Namespace) -> None:
         model = model_path(args.model)
         log.info("Using model: %s", model)
 
+    try:
+        key_language_names = parse_key_languages(args.key_language)
+    except ValueError as e:
+        log.error("Bad --key-language: %s", e)
+        sys.exit(1)
+
     key_codes = set()
-    for key_name in args.key:
+    key_languages: dict[int, str] = {}
+    for key_name in [*args.key, *key_language_names]:
         code = ecodes.ecodes.get(key_name)
         if code is None:
             log.error("Unknown key: %s", key_name)
             sys.exit(1)
+        if code in key_codes:
+            continue
         key_codes.add(code)
-        log.info("Push-to-talk key: %s (code %d)", key_name, code)
+        lang = key_language_names.get(key_name, args.language)
+        if key_name in key_language_names:
+            key_languages[code] = lang
+        log.info("Push-to-talk key: %s (code %d, language %s)", key_name, code, lang)
 
     # Collect unique devices that support any of the requested keys
     seen_paths = set()
@@ -630,7 +666,9 @@ async def run(args: argparse.Namespace) -> None:
     notify("Push-to-Talk", f"Ready ({args.mode}). Hold {key_names} to dictate.")
 
     tasks = [
-        asyncio.create_task(monitor_device(dev, key_codes, recorder))
+        asyncio.create_task(
+            monitor_device(dev, key_codes, recorder, key_languages)
+        )
         for dev in devices
     ]
     await asyncio.gather(*tasks)
@@ -714,6 +752,14 @@ def main() -> None:
         help="Spoken language code (e.g. en, it, pt) or 'auto' to detect it. "
         "English-only .en models always transcribe English. "
         "Local whisper only (default: en)",
+    )
+    parser.add_argument(
+        "--key-language",
+        nargs="*",
+        default=[],
+        metavar="KEY=LANG",
+        help="Extra push-to-talk keys with their own language, e.g. "
+        "KEY_F14=it. Keys from --key use --language.",
     )
     parser.add_argument(
         "--verbose",

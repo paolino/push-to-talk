@@ -35,6 +35,13 @@ in
       description = "Spoken language code (e.g. en, it, pt) or \"auto\" to detect it. Needs a multilingual model (no .en suffix) for anything but English. Local whisper only.";
     };
 
+    keyLanguages = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
+      example = { KEY_F14 = "it"; };
+      description = "Extra push-to-talk keys, each with its own language. Keys in `key` use `language`.";
+    };
+
     displayServer = lib.mkOption {
       type = lib.types.enum [ "auto" "wayland" "x11" ];
       default = "auto";
@@ -131,6 +138,9 @@ in
             "--display-server ${cfg.displayServer}"
             "--mode ${cfg.mode}"
             "--tail-ms ${toString cfg.tailMs}"
+          ]
+          ++ lib.optionals (cfg.keyLanguages != { }) [
+            "--key-language ${lib.concatStringsSep " " (lib.mapAttrsToList (k: v: "${k}=${v}") cfg.keyLanguages)}"
           ]
           ++ lib.optionals (cfg.mode == "stream") [
             "--step-ms ${toString cfg.streamStepMs}"
