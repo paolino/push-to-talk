@@ -141,7 +141,14 @@ Models are downloaded automatically on first use to `~/.local/share/whisper/`. A
 | `base.en` | 142 MB | Fast | Good |
 | `small.en` | 466 MB | Medium | Better |
 | `medium.en` | 1.5 GB | Slow | High |
-| `large` | 2.9 GB | Slowest | Highest |
+| `large-v3-turbo-q5_0` | 547 MB | Medium | High, multilingual |
+| `large-v3-turbo-q8_0` | 834 MB | Medium | High, multilingual |
+| `large-v3-turbo` | 1.5 GB | Slow | High, multilingual |
+| `large-v3` | 2.9 GB | Slowest | Highest, multilingual |
+
+Models ending in `.en` are English-only. To dictate in other languages pick a
+multilingual model and set `language` (e.g. `"it"`, or `"auto"` to detect the
+language of each utterance; `--language` on the command line).
 
 For batch mode, `base.en` offers the best speed/quality tradeoff. For stream mode with a Vulkan GPU, `small.en` works well.
 

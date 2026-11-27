@@ -28,6 +28,13 @@ in
       description = "Whisper model name (e.g. base.en, small, medium).";
     };
 
+    language = lib.mkOption {
+      type = lib.types.str;
+      default = "en";
+      example = "auto";
+      description = "Spoken language code (e.g. en, it, pt) or \"auto\" to detect it. Needs a multilingual model (no .en suffix) for anything but English. Local whisper only.";
+    };
+
     displayServer = lib.mkOption {
       type = lib.types.enum [ "auto" "wayland" "x11" ];
       default = "auto";
@@ -120,6 +127,7 @@ in
             "${cfg.package}/bin/push-to-talk"
             "--key ${lib.concatStringsSep " " cfg.key}"
             "--model ${cfg.whisperModel}"
+            "--language ${cfg.language}"
             "--display-server ${cfg.displayServer}"
             "--mode ${cfg.mode}"
             "--tail-ms ${toString cfg.tailMs}"
