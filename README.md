@@ -17,6 +17,8 @@ Audio is captured via PulseAudio/PipeWire, transcribed by whisper.cpp (locally o
 
 Records audio while the key is held, then transcribes the full recording on key-up. Best accuracy, but text only appears after you stop speaking.
 
+Every recording names the microphone it uses, in the log and in the notification ("Recording on Wireless Microphone Analog Stereo"). To prefer a specific microphone, pass `--source <text>` (NixOS module: `source`): the first source whose PulseAudio/PipeWire name or description contains that text, ignoring case, is used. When none matches, batch mode records from the default source and the notification says the preferred microphone was not found.
+
 ### Stream mode
 
 Uses `whisper-stream` for real-time transcription — text appears as you speak. Uses SDL2 for audio capture with a sliding window approach. **Requires Vulkan GPU** — CPU is too slow for real-time inference. Vulkan is enabled by default in the Nix package.
@@ -83,6 +85,7 @@ services.push-to-talk = {
   # streamLengthMs = 5000;
   # streamKeepMs = 200;
   # captureDeviceId = 0;   # specific SDL capture device
+  # source = "hollyland";  # batch mode: preferred microphone
 };
 ```
 

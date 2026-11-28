@@ -83,6 +83,13 @@ in
       description = "Remote whisper server URL (e.g. http://100.111.19.2:9013/transcribe). If set, uses HTTP instead of local whisper-cli.";
     };
 
+    source = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "hollyland";
+      description = "Batch mode: preferred microphone, matched case-insensitively against the PulseAudio/PipeWire source name or description. Falls back to the default source when absent.";
+    };
+
     captureDeviceId = lib.mkOption {
       type = lib.types.nullOr lib.types.int;
       default = null;
@@ -145,6 +152,9 @@ in
           ]
           ++ lib.optionals cfg.noFallback [
             "--no-fallback"
+          ]
+          ++ lib.optionals (cfg.source != null) [
+            "--source ${lib.escapeShellArg cfg.source}"
           ]
           ++ lib.optionals (cfg.whisperUrl != null) [
             "--whisper-url ${cfg.whisperUrl}"
