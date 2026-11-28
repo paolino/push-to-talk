@@ -14,6 +14,7 @@ import tempfile
 import time
 import urllib.request
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 
 import evdev
@@ -70,6 +71,76 @@ def notify(title: str, body: str) -> None:
         )
     except FileNotFoundError:
         pass
+
+
+@dataclass(frozen=True)
+class Source:
+    """A PulseAudio/PipeWire capture source."""
+
+    name: str
+    description: str
+
+    @property
+    def label(self) -> str:
+        """Human-readable name for logs and notifications."""
+        return self.description
+
+    @property
+    def is_monitor(self) -> bool:
+        """Whether this source only mirrors an output (not a microphone)."""
+        return self.name.endswith(".monitor")
+
+
+@dataclass(frozen=True)
+class SourceChoice:
+    """The source to record from, and whether the preferred one was found."""
+
+    source: Source
+    preferred_found: bool
+
+
+def choose_source(
+    sources: list[Source], preferred: str | None, default_name: str
+) -> SourceChoice:
+    """Pick the preferred source, falling back to the default one.
+
+    ``preferred`` matches case-insensitively against a source's name or
+    description; monitor sources never match. Without a preference, or
+    when nothing matches, the default source is used.
+    """
+    if preferred:
+        needle = preferred.lower()
+        for source in sources:
+            if source.is_monitor:
+                continue
+            if needle in source.name.lower() or needle in source.description.lower():
+                return SourceChoice(source, preferred_found=True)
+    default = next(
+        (s for s in sources if s.name == default_name),
+        Source(name=default_name, description=default_name),
+    )
+    return SourceChoice(default, preferred_found=not preferred)
+
+
+def list_sources() -> tuple[list[Source], str]:
+    """Return the capture sources and the default source name via pactl."""
+    listing = subprocess.run(
+        ["pactl", "--format=json", "list", "sources"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    sources = [
+        Source(name=s["name"], description=s.get("description") or s["name"])
+        for s in json.loads(listing.stdout)
+    ]
+    default = subprocess.run(
+        ["pactl", "get-default-source"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return sources, default.stdout.strip()
 
 
 def find_devices(key_code: int) -> list[evdev.InputDevice]:
@@ -211,10 +282,12 @@ class Recorder(BaseRecorder):
         whisper_url: str | None = None,
         tail_ms: int = 2000,
         language: str = "en",
+        preferred_source: str | None = None,
     ) -> None:
         super().__init__(model, display_server, language)
         self.whisper_url = whisper_url
         self.tail_ms = tail_ms
+        self.preferred_source = preferred_source
         self.process: asyncio.subprocess.Process | None = None
         self.chunks: list[bytes] = []
         self.recording = False
@@ -234,11 +307,13 @@ class Recorder(BaseRecorder):
         if self.recording:
             return
         self.chunks = []
+        device_args, message = self._resolve_source()
         self.process = await asyncio.create_subprocess_exec(
             "parec",
             "--format=s16le",
             "--rate=16000",
             "--channels=1",
+            *device_args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -247,8 +322,25 @@ class Recorder(BaseRecorder):
         # Wait for first chunk to confirm parec is streaming
         while not self.chunks and self.recording:
             await asyncio.sleep(0.05)
-        log.info("Recording started")
-        notify("Push-to-Talk", "Recording...")
+        log.info("Recording started: %s", message)
+        notify("Push-to-Talk", message)
+
+    def _resolve_source(self) -> tuple[list[str], str]:
+        """Choose the source for this recording.
+
+        Returns the extra parec arguments and the message naming the
+        microphone actually used.
+        """
+        try:
+            sources, default_name = list_sources()
+        except (OSError, subprocess.CalledProcessError, ValueError, KeyError) as e:
+            log.warning("Cannot list audio sources (%s); using the default", e)
+            return [], "Recording on the default microphone (sources unknown)"
+        choice = choose_source(sources, self.preferred_source, default_name)
+        message = f"Recording on {choice.source.label}"
+        if not choice.preferred_found:
+            message += f" (no microphone matching '{self.preferred_source}')"
+        return [f"--device={choice.source.name}"], message
 
     async def stop_and_transcribe(self) -> None:
         """Stop parec, write WAV from buffer, transcribe."""
@@ -624,6 +716,7 @@ async def run(args: argparse.Namespace) -> None:
             whisper_url=args.whisper_url,
             tail_ms=args.tail_ms,
             language=args.language,
+            preferred_source=args.source,
         )
 
     key_names = ", ".join(args.key)
@@ -702,6 +795,13 @@ def main() -> None:
         type=int,
         default=2000,
         help="Batch mode: extra recording time in ms after key release (default: 2000)",
+    )
+    parser.add_argument(
+        "--source",
+        default=None,
+        help="Batch mode: preferred microphone, matched case-insensitively "
+        "against the PulseAudio/PipeWire source name or description "
+        "(e.g. hollyland). Falls back to the default source when absent.",
     )
     parser.add_argument(
         "--whisper-url",
